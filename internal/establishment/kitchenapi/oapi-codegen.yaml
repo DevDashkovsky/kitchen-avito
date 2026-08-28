@@ -1,0 +1,10 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/oapi-codegen/oapi-codegen/v2.8.0/configuration-schema.json
+package: kitchenapi
+generate:
+  models: true
+  client: true
+output-options:
+  include-tags:
+    - Partner
+  name-normalizer: ToCamelCaseWithInitialisms
+output: client.gen.go
