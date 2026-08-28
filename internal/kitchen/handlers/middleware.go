@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
+	"github.com/go-chi/chi/v5"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	openapimiddleware "github.com/oapi-codegen/nethttp-middleware"
 
 	"kitchen-api/internal/kitchen/api"
@@ -43,6 +46,29 @@ func (h *Handler) StrictServerOptions() api.StrictHTTPServerOptions {
 			writeJSON(w, http.StatusInternalServerError, internalError())
 		},
 	}
+}
+
+func (h *Handler) RequestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
+		responseWriter := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+		next.ServeHTTP(responseWriter, r)
+
+		status := responseWriter.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+
+		h.logger.Info(
+			"request completed",
+			"method", r.Method,
+			"route", chi.RouteContext(r.Context()).RoutePattern(),
+			"status", status,
+			"duration_ms", time.Since(startedAt).Milliseconds(),
+			"request_id", chimiddleware.GetReqID(r.Context()),
+		)
+	})
 }
 
 func (h *Handler) authenticate(
