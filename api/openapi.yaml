@@ -1,0 +1,1219 @@
+openapi: 3.0.3
+
+info:
+  title: Avito Kitchen API
+  version: 1.0.0
+  license:
+    name: UNLICENSED
+  description: |
+    API основного сервиса Авито.Кухни.
+    Покупательские методы доступны без аккаунта. Получение и отмена заказа
+    защищены секретным tracking token. Партнёрские методы защищены API-ключом
+    заведения.
+
+servers:
+  - url: /
+    description: Тот же сервер, с которого открыт контракт
+
+tags:
+  - name: Customer
+    description: Методы web-клиента покупателя
+  - name: Partner
+    description: Закрытые методы сервиса заведения
+
+security: []
+
+paths:
+  /api/v1/establishments:
+    get:
+      tags:
+        - Customer
+      operationId: listEstablishments
+      summary: Получить список заведений
+      description: |
+        Возвращает страницу заведений. Необязательный параметр query ищет
+        заведения по части названия заведения или блюда без учёта регистра.
+        Заведения, временно не принимающие заказы, также включаются в ответ.
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: Страница заведений
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EstablishmentListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/establishments/{establishmentId}/menu:
+    get:
+      tags:
+        - Customer
+      operationId: getEstablishmentMenu
+      summary: Получить меню заведения
+      description: |
+        Возвращает все категории и блюда заведения без пагинации.
+        Пустые категории и недоступные блюда включаются в ответ.
+      parameters:
+        - $ref: '#/components/parameters/EstablishmentId'
+      responses:
+        '200':
+          description: Меню заведения
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/orders:
+    post:
+      tags:
+        - Customer
+      operationId: createOrder
+      summary: Создать заказ
+      description: |
+        Проверяет заведение, доступность блюд и ожидаемые цены, рассчитывает
+        итоговую сумму и атомарно создаёт заказ вместе с позициями.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: Заказ создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateOrderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Заведение или состав заказа изменились
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderConflictResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/orders/status:
+    get:
+      tags:
+        - Customer
+      operationId: getTrackedOrder
+      summary: Получить заказ по tracking token
+      description: |
+        Возвращает статус и состав заказа без внутреннего идентификатора,
+        tracking token и персональных данных покупателя.
+      security:
+        - TrackingToken: []
+      responses:
+        '200':
+          description: Текущее состояние заказа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackedOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/orders/cancel:
+    post:
+      tags:
+        - Customer
+      operationId: cancelOrder
+      summary: Отменить заказ
+      description: |
+        Отменяет заказ только из pending_confirmation. Повторная отмена уже
+        отменённого заказа также считается успешной.
+      security:
+        - TrackingToken: []
+      responses:
+        '200':
+          description: Заказ отменён или уже был отменён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelOrderResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/menu:
+    get:
+      tags:
+        - Partner
+      operationId: getPartnerMenu
+      summary: Получить собственное меню
+      security:
+        - PartnerApiKey: []
+      responses:
+        '200':
+          description: Меню заведения из API-ключа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MenuResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/categories:
+    post:
+      tags:
+        - Partner
+      operationId: createCategory
+      summary: Создать категорию
+      security:
+        - PartnerApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryWriteRequest'
+      responses:
+        '201':
+          description: Категория создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/categories/{categoryId}:
+    patch:
+      tags:
+        - Partner
+      operationId: updateCategory
+      summary: Изменить категорию
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryWriteRequest'
+      responses:
+        '200':
+          description: Категория изменена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/dishes:
+    post:
+      tags:
+        - Partner
+      operationId: createDish
+      summary: Создать блюдо
+      security:
+        - PartnerApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDishRequest'
+      responses:
+        '201':
+          description: Блюдо создано
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/dishes/{dishId}:
+    patch:
+      tags:
+        - Partner
+      operationId: updateDish
+      summary: Изменить блюдо
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/DishId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateDishRequest'
+      responses:
+        '200':
+          description: Блюдо изменено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/establishment:
+    patch:
+      tags:
+        - Partner
+      operationId: updateEstablishment
+      summary: Изменить приём заказов
+      security:
+        - PartnerApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEstablishmentRequest'
+      responses:
+        '200':
+          description: Приём заказов изменён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Establishment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/orders:
+    get:
+      tags:
+        - Partner
+      operationId: listPartnerOrders
+      summary: Получить заказы заведения
+      description: |
+        Используется для polling. По умолчанию возвращает первую пачку заказов
+        в pending_confirmation от самых старых к новым. Offset не используется,
+        чтобы изменение статусов не приводило к пропуску заказов.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/OrderStatusFilter'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Заказы заведения
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerOrderListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/orders/{orderId}:
+    get:
+      tags:
+        - Partner
+      operationId: getPartnerOrder
+      summary: Получить один заказ
+      description: |
+        Отсутствующий и чужой заказ одинаково возвращают 404, чтобы не
+        раскрывать существование заказов других заведений.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      responses:
+        '200':
+          description: Заказ заведения
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PartnerOrder'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/orders/{orderId}/status:
+    patch:
+      tags:
+        - Partner
+      operationId: updatePartnerOrderStatus
+      summary: Изменить статус заказа
+      description: |
+        Проверяет владельца заказа и допустимость перехода. Повтор уже
+        применённого статуса считается успешным.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/OrderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrderStatusRequest'
+      responses:
+        '200':
+          description: Текущее состояние статуса заказа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateOrderStatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    TrackingToken:
+      type: apiKey
+      in: header
+      name: X-Tracking-Token
+      description: Секретный токен, возвращённый только при создании заказа
+    PartnerApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+      description: Секретный API-ключ заведения
+
+  parameters:
+    SearchQuery:
+      name: query
+      in: query
+      required: false
+      description: Часть названия заведения или блюда
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Максимальное количество записей в ответе
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Количество пропускаемых записей
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        default: 0
+    EstablishmentId:
+      name: establishmentId
+      in: path
+      required: true
+      description: Идентификатор заведения
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    CategoryId:
+      name: categoryId
+      in: path
+      required: true
+      description: Идентификатор категории
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    DishId:
+      name: dishId
+      in: path
+      required: true
+      description: Идентификатор блюда
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      description: Внутренний идентификатор заказа, доступный заведению
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    OrderStatusFilter:
+      name: status
+      in: query
+      required: false
+      description: Один статус для фильтрации заказов
+      schema:
+        allOf:
+          - $ref: '#/components/schemas/OrderStatus'
+        default: pending_confirmation
+
+  responses:
+    BadRequest:
+      description: Некорректные данные запроса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+    Unauthorized:
+      description: Секрет отсутствует или неверен
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: unauthorized
+            message: Неверные данные доступа
+    NotFound:
+      description: Ресурс не найден или недоступен этому заведению
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: not_found
+            message: Ресурс не найден
+    Conflict:
+      description: Операция конфликтует с текущим состоянием ресурса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Внутренняя ошибка без раскрытия технических деталей
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: internal_error
+            message: Внутренняя ошибка сервиса
+
+  schemas:
+    Establishment:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - accepts_orders
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        accepts_orders:
+          type: boolean
+
+    EstablishmentSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+
+    EstablishmentListResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - establishments
+        - limit
+        - offset
+        - total
+      properties:
+        establishments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Establishment'
+        limit:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 100
+        offset:
+          type: integer
+          format: int64
+          minimum: 0
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+
+    Category:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    MenuCategory:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - dishes
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        dishes:
+          type: array
+          items:
+            $ref: '#/components/schemas/MenuDish'
+
+    MenuDish:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - name
+        - description
+        - price_minor
+        - is_available
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        price_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Цена в копейках
+        is_available:
+          type: boolean
+
+    Dish:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - category_id
+        - name
+        - description
+        - price_minor
+        - is_available
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        category_id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        price_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Цена в копейках
+        is_available:
+          type: boolean
+
+    MenuResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - establishment
+        - categories
+      properties:
+        establishment:
+          $ref: '#/components/schemas/Establishment'
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/MenuCategory'
+
+    CreateOrderItemRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - dish_id
+        - quantity
+        - expected_unit_price_minor
+      properties:
+        dish_id:
+          type: integer
+          format: int64
+          minimum: 1
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+        expected_unit_price_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Цена одной единицы в копейках, которую видел покупатель
+
+    CreateOrderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - establishment_id
+        - customer_name
+        - customer_phone
+        - delivery_address
+        - order_items
+      properties:
+        establishment_id:
+          type: integer
+          format: int64
+          minimum: 1
+        customer_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        customer_phone:
+          type: string
+          minLength: 5
+          maxLength: 32
+        delivery_address:
+          type: string
+          minLength: 1
+          maxLength: 500
+        comment:
+          type: string
+          nullable: true
+          maxLength: 2000
+        order_items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/CreateOrderItemRequest'
+
+    CreateOrderResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - tracking_token
+        - status
+        - total_minor
+        - created_at
+      properties:
+        tracking_token:
+          type: string
+          minLength: 32
+          description: Случайный секрет, исходное значение которого не хранится
+        status:
+          type: string
+          enum:
+            - pending_confirmation
+        total_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Итоговая сумма заказа в копейках
+        created_at:
+          type: string
+          format: date-time
+
+    OrderItem:
+      type: object
+      additionalProperties: false
+      required:
+        - dish_id
+        - dish_name
+        - unit_price_minor
+        - quantity
+      properties:
+        dish_id:
+          type: integer
+          format: int64
+          minimum: 1
+        dish_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: Снимок названия на момент оформления
+        unit_price_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Снимок цены одной единицы в копейках
+        quantity:
+          type: integer
+          format: int32
+          minimum: 1
+
+    OrderStatus:
+      type: string
+      enum:
+        - pending_confirmation
+        - confirmed
+        - preparing
+        - ready_for_delivery
+        - delivering
+        - completed
+        - rejected
+        - cancelled
+
+    NullableRejectionReason:
+      type: string
+      nullable: true
+      enum:
+        - out_of_stock
+        - overloaded
+        - delivery_unavailable
+        - other
+        - confirmation_timeout
+
+    PartnerRejectionReason:
+      type: string
+      enum:
+        - out_of_stock
+        - overloaded
+        - delivery_unavailable
+        - other
+
+    TrackedOrder:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - establishment
+        - order_items
+        - total_minor
+        - rejection_reason
+        - rejection_comment
+        - created_at
+        - updated_at
+      properties:
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        establishment:
+          $ref: '#/components/schemas/EstablishmentSummary'
+        order_items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        total_minor:
+          type: integer
+          format: int64
+          minimum: 0
+        rejection_reason:
+          $ref: '#/components/schemas/NullableRejectionReason'
+        rejection_comment:
+          type: string
+          nullable: true
+          maxLength: 2000
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CancelOrderResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - updated_at
+      properties:
+        status:
+          type: string
+          enum:
+            - cancelled
+        updated_at:
+          type: string
+          format: date-time
+
+    CategoryWriteRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+
+    CreateDishRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - category_id
+        - name
+        - price_minor
+      properties:
+        category_id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          default: ''
+          maxLength: 2000
+        price_minor:
+          type: integer
+          format: int64
+          minimum: 0
+        is_available:
+          type: boolean
+          default: false
+
+    UpdateDishRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        category_id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        price_minor:
+          type: integer
+          format: int64
+          minimum: 0
+        is_available:
+          type: boolean
+
+    UpdateEstablishmentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - accepts_orders
+      properties:
+        accepts_orders:
+          type: boolean
+
+    PartnerOrder:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - status
+        - customer_name
+        - customer_phone
+        - delivery_address
+        - order_items
+        - total_minor
+        - rejection_reason
+        - rejection_comment
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        customer_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        customer_phone:
+          type: string
+          minLength: 5
+          maxLength: 32
+        delivery_address:
+          type: string
+          minLength: 1
+          maxLength: 500
+        comment:
+          type: string
+          nullable: true
+          maxLength: 2000
+        order_items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        total_minor:
+          type: integer
+          format: int64
+          minimum: 0
+        rejection_reason:
+          $ref: '#/components/schemas/NullableRejectionReason'
+        rejection_comment:
+          type: string
+          nullable: true
+          maxLength: 2000
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PartnerOrderListResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - orders
+        - total
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartnerOrder'
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+
+    UpdateOrderStatusRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - confirmed
+            - rejected
+            - preparing
+            - ready_for_delivery
+            - delivering
+            - completed
+        rejection_reason:
+          $ref: '#/components/schemas/PartnerRejectionReason'
+        rejection_comment:
+          type: string
+          nullable: true
+          maxLength: 2000
+      description: |
+        rejection_reason обязателен только для статуса rejected.
+        Для причины other обязателен rejection_comment.
+
+    UpdateOrderStatusResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - status
+        - rejection_reason
+        - rejection_comment
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        rejection_reason:
+          $ref: '#/components/schemas/NullableRejectionReason'
+        rejection_comment:
+          type: string
+          nullable: true
+          maxLength: 2000
+        updated_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - validation_error
+            - unauthorized
+            - not_found
+            - order_conflict
+            - duplicate_category
+            - invalid_status_transition
+            - cancellation_not_allowed
+            - internal_error
+        message:
+          type: string
+
+    FieldError:
+      type: object
+      additionalProperties: false
+      required:
+        - field
+        - message
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+
+    ValidationErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+        - fields
+      properties:
+        code:
+          type: string
+          enum:
+            - validation_error
+        message:
+          type: string
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldError'
+
+    DishConflict:
+      type: object
+      additionalProperties: false
+      required:
+        - dish_id
+        - reason
+      properties:
+        dish_id:
+          type: integer
+          format: int64
+          minimum: 1
+        reason:
+          type: string
+          enum:
+            - price_changed
+            - dish_unavailable
+        current_unit_price_minor:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+
+    OrderConflictResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+        - conflicts
+      properties:
+        code:
+          type: string
+          enum:
+            - order_conflict
+        message:
+          type: string
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/DishConflict'
