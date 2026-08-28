@@ -1,0 +1,67 @@
+name: kitchen-avito
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: kitchen
+      POSTGRES_PASSWORD: kitchen
+      POSTGRES_DB: kitchen
+      POSTGRES_INITDB_ARGS: --locale-provider=icu --icu-locale=und
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kitchen -d kitchen"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: postgres://kitchen:kitchen@postgres:5432/kitchen?sslmode=disable
+      GOOSE_MIGRATION_DIR: /migrations
+    entrypoint: ["/goose"]
+    command: ["up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  kitchen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HTTP_ADDRESS: :8080
+      DATABASE_URL: postgres://kitchen:kitchen@postgres:5432/kitchen?sslmode=disable
+      CONFIRMATION_TIMEOUT: 2m
+      TIMEOUT_SCAN_INTERVAL: 5s
+      SHUTDOWN_TIMEOUT: 10s
+    ports:
+      - "8080:8080"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  establishment:
+    build:
+      context: .
+      dockerfile: Dockerfile.establishment
+    environment:
+      KITCHEN_BASE_URL: http://kitchen:8080
+      PARTNER_API_KEY: demo-partner-key
+      PROCESS_INTERVAL: 5s
+      REQUEST_TIMEOUT: 10s
+      SHUTDOWN_TIMEOUT: 10s
+    depends_on:
+      kitchen:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
