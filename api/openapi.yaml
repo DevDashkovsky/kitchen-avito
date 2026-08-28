@@ -94,7 +94,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreateOrderResponse'
+                $ref: '#/components/schemas/CreatedOrder'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -148,7 +148,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CancelOrderResponse'
+                $ref: '#/components/schemas/CancelledOrder'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '409':
@@ -789,7 +789,7 @@ components:
           items:
             $ref: '#/components/schemas/CreateOrderItemRequest'
 
-    CreateOrderResponse:
+    CreatedOrder:
       type: object
       additionalProperties: false
       required:
@@ -912,7 +912,7 @@ components:
           type: string
           format: date-time
 
-    CancelOrderResponse:
+    CancelledOrder:
       type: object
       additionalProperties: false
       required:
