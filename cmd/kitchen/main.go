@@ -75,7 +75,6 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
-	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
 	router.Use(handler.RequestLogger)
 
