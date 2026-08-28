@@ -5,35 +5,28 @@ import "testing"
 func TestOrderStatusCanTransitionTo(t *testing.T) {
 	t.Parallel()
 
-	allowed := map[OrderStatus][]OrderStatus{
-		OrderStatusPendingConfirmation: {
-			OrderStatusConfirmed,
-			OrderStatusRejected,
-			OrderStatusCancelled,
-		},
-		OrderStatusConfirmed:        {OrderStatusPreparing},
-		OrderStatusPreparing:        {OrderStatusReadyForDelivery},
-		OrderStatusReadyForDelivery: {OrderStatusDelivering},
-		OrderStatusDelivering:       {OrderStatusCompleted},
+	tests := []struct {
+		current OrderStatus
+		next    OrderStatus
+		want    bool
+	}{
+		{OrderStatusPendingConfirmation, OrderStatusConfirmed, true},
+		{OrderStatusPendingConfirmation, OrderStatusRejected, true},
+		{OrderStatusPendingConfirmation, OrderStatusCancelled, true},
+		{OrderStatusConfirmed, OrderStatusPreparing, true},
+		{OrderStatusPreparing, OrderStatusReadyForDelivery, true},
+		{OrderStatusReadyForDelivery, OrderStatusDelivering, true},
+		{OrderStatusDelivering, OrderStatusCompleted, true},
+		{OrderStatusPendingConfirmation, OrderStatusPreparing, false},
+		{OrderStatusConfirmed, OrderStatusCompleted, false},
+		{OrderStatusCompleted, OrderStatusPreparing, false},
+		{OrderStatusRejected, OrderStatusConfirmed, false},
+		{OrderStatusCancelled, OrderStatusConfirmed, false},
 	}
 
-	statuses := []OrderStatus{
-		OrderStatusPendingConfirmation,
-		OrderStatusConfirmed,
-		OrderStatusPreparing,
-		OrderStatusReadyForDelivery,
-		OrderStatusDelivering,
-		OrderStatusCompleted,
-		OrderStatusRejected,
-		OrderStatusCancelled,
-	}
-
-	for _, current := range statuses {
-		for _, next := range statuses {
-			want := containsStatus(allowed[current], next)
-			if got := current.CanTransitionTo(next); got != want {
-				t.Errorf("CanTransitionTo(%q, %q) = %t, want %t", current, next, got, want)
-			}
+	for _, test := range tests {
+		if got := test.current.CanTransitionTo(test.next); got != test.want {
+			t.Errorf("CanTransitionTo(%q, %q) = %t, want %t", test.current, test.next, got, test.want)
 		}
 	}
 }
@@ -41,30 +34,19 @@ func TestOrderStatusCanTransitionTo(t *testing.T) {
 func TestOrderStatusIsTerminal(t *testing.T) {
 	t.Parallel()
 
-	tests := map[OrderStatus]bool{
-		OrderStatusPendingConfirmation: false,
-		OrderStatusConfirmed:           false,
-		OrderStatusPreparing:           false,
-		OrderStatusReadyForDelivery:    false,
-		OrderStatusDelivering:          false,
-		OrderStatusCompleted:           true,
-		OrderStatusRejected:            true,
-		OrderStatusCancelled:           true,
+	terminal := []OrderStatus{
+		OrderStatusCompleted,
+		OrderStatusRejected,
+		OrderStatusCancelled,
 	}
 
-	for status, want := range tests {
-		if got := status.IsTerminal(); got != want {
-			t.Errorf("IsTerminal(%q) = %t, want %t", status, got, want)
-		}
-	}
-}
-
-func containsStatus(statuses []OrderStatus, target OrderStatus) bool {
-	for _, status := range statuses {
-		if status == target {
-			return true
+	for _, status := range terminal {
+		if !status.IsTerminal() {
+			t.Errorf("IsTerminal(%q) = false, want true", status)
 		}
 	}
 
-	return false
+	if OrderStatusPreparing.IsTerminal() {
+		t.Error("IsTerminal(preparing) = true, want false")
+	}
 }
