@@ -1,0 +1,104 @@
+@startuml
+title ER-диаграмма Авито.Кухни
+
+top to bottom direction
+hide methods
+hide stereotypes
+hide circle
+
+skinparam backgroundColor #FFFFFF
+skinparam linetype polyline
+skinparam entity {
+  BackgroundColor #F8FAFC
+  BorderColor #475569
+  FontColor #1F2937
+}
+skinparam ArrowColor #64748B
+
+entity "establishments" as establishments {
+  * id : BIGINT <<PK>>
+  --
+  * name : TEXT
+  * accepts_orders : BOOLEAN
+  * api_key_hash : BYTEA <<UQ>>
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "menu_categories" as menu_categories {
+  * id : BIGINT <<PK>>
+  --
+  * establishment_id : BIGINT <<FK>>
+  * name : TEXT
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "dishes" as dishes {
+  * id : BIGINT <<PK>>
+  --
+  * category_id : BIGINT <<FK>>
+  * name : TEXT
+  * description : TEXT
+  * price_minor : BIGINT
+  * is_available : BOOLEAN
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "orders" as orders {
+  * id : BIGINT <<PK>>
+  --
+  * establishment_id : BIGINT <<FK>>
+  * tracking_token_hash : BYTEA <<UQ>>
+  * status : TEXT
+  * customer_name : TEXT
+  * customer_phone : TEXT
+  * delivery_address : TEXT
+  comment : TEXT
+  * total_minor : BIGINT
+  rejection_reason : TEXT
+  rejection_comment : TEXT
+  * created_at : TIMESTAMPTZ
+  * updated_at : TIMESTAMPTZ
+}
+
+entity "order_items" as order_items {
+  * id : BIGINT <<PK>>
+  --
+  * order_id : BIGINT <<FK>>
+  * dish_id : BIGINT <<FK>>
+  * dish_name : TEXT
+  * unit_price_minor : BIGINT
+  * quantity : INTEGER
+}
+
+establishments "1" --> "0..*" menu_categories : категории
+establishments "1" --> "0..*" orders : заказы
+menu_categories "1" --> "0..*" dishes : блюда
+orders "1" --> "1..*" order_items : позиции заказа
+dishes "1" --> "0..*" order_items : исходное блюдо
+
+note right of menu_categories
+  UNIQUE (establishment_id, lower(name))
+end note
+
+note right of order_items
+  UNIQUE (order_id, dish_id)
+  dish_name и unit_price_minor
+  являются снимками при оформлении
+end note
+
+legend bottom
+  Стрелка идёт от родительской таблицы к зависимой
+  1 ровно одна запись
+  0..* ноль или несколько записей
+  1..* одна или несколько записей
+  * обязательное поле
+  PK первичный ключ
+  FK внешний ключ
+  UQ уникальное значение
+  *_minor сумма в минимальных денежных единицах
+endlegend
+
+@enduml
