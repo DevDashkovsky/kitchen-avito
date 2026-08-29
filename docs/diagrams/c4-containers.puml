@@ -1,0 +1,45 @@
+@startuml
+title Авито.Кухня - C4, уровень контейнеров
+
+left to right direction
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam nodesep 70
+skinparam ranksep 80
+skinparam ArrowColor #64748B
+skinparam rectangle {
+  BackgroundColor #F8FAFC
+  BorderColor #475569
+  FontColor #1F2937
+  RoundCorner 12
+}
+skinparam database {
+  BackgroundColor #FFF7E6
+  BorderColor #B7791F
+  FontColor #1F2937
+}
+
+actor "Покупатель" as customer
+
+rectangle "Web-клиент\nвне задания" as web <<External system>> #F3F4F6
+
+rectangle "Авито.Кухня" as kitchen_boundary {
+  rectangle "Kitchen API\nGo, Chi, oapi-codegen\nHTTP API и timeout worker" as kitchen <<Container>> #E8F1FF
+  database "PostgreSQL 16\nменю и заказы" as postgres <<Container>>
+  rectangle "Goose migrations\nприменение схемы и demo data" as migrations <<Container>> #ECF9EE
+}
+
+rectangle "Пример заведения\nGo worker\nсгенерированный Partner client" as establishment <<External system>> #ECF9EE
+
+customer --> web : использует
+web --> kitchen : Customer API
+establishment --> kitchen : Partner API
+kitchen --> postgres : pgx
+migrations --> postgres : Goose
+
+legend bottom
+  C4 Level 2 показывает запускаемые контейнеры и внешних участников.
+  Web-клиент обозначен только как будущий потребитель API.
+endlegend
+
+@enduml
