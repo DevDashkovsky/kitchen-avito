@@ -90,8 +90,6 @@ OpenAPI является источником контракта. Из него 
 
 ## Запуск
 
-Нужен Docker с Compose.
-
 ```bash
 docker-compose up --build
 ```
@@ -138,3 +136,4 @@ go generate ./...
 Go 1.25, Chi, pgx, PostgreSQL 16, Goose, oapi-codegen, OpenAPI 3.0, Docker Compose, GolangCI-Lint и PlantUML.
 
 ИИ использовался как инструмент для обсуждения решений, реализации и review. Все изменения отдельно проверялись тестами, race detector, линтером, миграциями и повторным review кода.
+В реализации я использовал кастомных агентов со скилами.
