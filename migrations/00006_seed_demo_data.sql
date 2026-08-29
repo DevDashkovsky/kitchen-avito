@@ -4,7 +4,8 @@ VALUES (
     'Демо Кафе',
     TRUE,
     decode('5f7b2ed74a9736a538a6fb5a5a1a76afdcdd0d177d7fc6e79c6b6843527d848d', 'hex')
-);
+)
+ON CONFLICT (api_key_hash) DO NOTHING;
 
 INSERT INTO menu_categories (establishment_id, name)
 SELECT id, category_name
@@ -13,7 +14,13 @@ CROSS JOIN (VALUES ('Бургеры'), ('Напитки')) AS categories(categor
 WHERE api_key_hash = decode(
     '5f7b2ed74a9736a538a6fb5a5a1a76afdcdd0d177d7fc6e79c6b6843527d848d',
     'hex'
-);
+)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM menu_categories AS existing
+      WHERE existing.establishment_id = establishments.id
+        AND lower(existing.name) = lower(category_name)
+  );
 
 INSERT INTO dishes (category_id, name, description, price_minor, is_available)
 SELECT
@@ -33,6 +40,12 @@ WHERE c.name = 'Бургеры'
   AND e.api_key_hash = decode(
       '5f7b2ed74a9736a538a6fb5a5a1a76afdcdd0d177d7fc6e79c6b6843527d848d',
       'hex'
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM dishes AS existing
+      WHERE existing.category_id = c.id
+        AND existing.name = dish_name
   );
 
 INSERT INTO dishes (category_id, name, description, price_minor, is_available)
@@ -43,32 +56,15 @@ WHERE c.name = 'Напитки'
   AND e.api_key_hash = decode(
       '5f7b2ed74a9736a538a6fb5a5a1a76afdcdd0d177d7fc6e79c6b6843527d848d',
       'hex'
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM dishes AS existing
+      WHERE existing.category_id = c.id
+        AND existing.name = 'Морс'
   );
 
 -- +goose Down
-DELETE FROM dishes
-WHERE category_id IN (
-    SELECT c.id
-    FROM menu_categories AS c
-    JOIN establishments AS e ON e.id = c.establishment_id
-    WHERE e.api_key_hash = decode(
-        '5f7b2ed74a9736a538a6fb5a5a1a76afdcdd0d177d7fc6e79c6b6843527d848d',
-        'hex'
-    )
-);
-
-DELETE FROM menu_categories
-WHERE establishment_id IN (
-    SELECT id
-    FROM establishments
-    WHERE api_key_hash = decode(
-        '5f7b2ed74a9736a538a6fb5a5a1a76afdcdd0d177d7fc6e79c6b6843527d848d',
-        'hex'
-    )
-);
-
-DELETE FROM establishments
-WHERE api_key_hash = decode(
-    '5f7b2ed74a9736a538a6fb5a5a1a76afdcdd0d177d7fc6e79c6b6843527d848d',
-    'hex'
-);
+-- Демо-блюда могут быть связаны с пользовательскими заказами. Откат данных
+-- намеренно ничего не удаляет, чтобы не ломать внешние ключи и не терять заказы.
+SELECT 1;

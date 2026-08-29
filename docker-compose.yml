@@ -1,4 +1,4 @@
-name: kitchen-avito
+name: "${COMPOSE_PROJECT_NAME:-kitchen-avito}"
 
 services:
   postgres:
@@ -38,11 +38,11 @@ services:
     environment:
       HTTP_ADDRESS: :8080
       DATABASE_URL: postgres://kitchen:kitchen@postgres:5432/kitchen?sslmode=disable
-      CONFIRMATION_TIMEOUT: 2m
-      TIMEOUT_SCAN_INTERVAL: 5s
+      CONFIRMATION_TIMEOUT: "${CONFIRMATION_TIMEOUT:-2m}"
+      TIMEOUT_SCAN_INTERVAL: "${TIMEOUT_SCAN_INTERVAL:-5s}"
       SHUTDOWN_TIMEOUT: 10s
     ports:
-      - "8080:8080"
+      - "${KITCHEN_HOST_ADDRESS:-0.0.0.0}:${KITCHEN_HOST_PORT:-8080}:8080"
     depends_on:
       migrations:
         condition: service_completed_successfully

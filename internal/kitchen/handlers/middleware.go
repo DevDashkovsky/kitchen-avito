@@ -25,6 +25,8 @@ var (
 	errAuthenticationInternal = errors.New("authentication internal error")
 )
 
+const maxRequestBodyBytes int64 = 1 << 20
+
 func (h *Handler) OpenAPIValidator(spec *openapi3.T) func(http.Handler) http.Handler {
 	return openapimiddleware.OapiRequestValidatorWithOptions(spec, &openapimiddleware.Options{
 		Options: openapi3filter.Options{
@@ -39,6 +41,10 @@ func (h *Handler) StrictServerOptions() api.StrictHTTPServerOptions {
 	return api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
 			h.logError("decode request", err)
+			if requestTooLarge(err) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, badRequest("Тело запроса слишком большое"))
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, badRequest("Некорректные данные запроса"))
 		},
 		ResponseErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -46,6 +52,19 @@ func (h *Handler) StrictServerOptions() api.StrictHTTPServerOptions {
 			writeJSON(w, http.StatusInternalServerError, internalError())
 		},
 	}
+}
+
+func (h *Handler) RequestBodyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > maxRequestBodyBytes {
+			writeJSON(w, http.StatusRequestEntityTooLarge, badRequest("Тело запроса слишком большое"))
+			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) RequestLogger(next http.Handler) http.Handler {
@@ -132,6 +151,10 @@ func (h *Handler) validationErrorHandler(
 		writeJSON(w, http.StatusInternalServerError, internalError())
 		return
 	}
+	if requestTooLarge(err) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, badRequest("Тело запроса слишком большое"))
+		return
+	}
 
 	var securityError *openapi3filter.SecurityRequirementsError
 	if errors.As(err, &securityError) {
@@ -145,6 +168,11 @@ func (h *Handler) validationErrorHandler(
 	}
 
 	writeJSON(w, status, badRequest("Некорректные данные запроса"))
+}
+
+func requestTooLarge(err error) bool {
+	var maxBytesError *http.MaxBytesError
+	return errors.As(err, &maxBytesError)
 }
 
 func bearerToken(authorization string) (string, bool) {

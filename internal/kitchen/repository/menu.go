@@ -29,17 +29,29 @@ const dishColumns = `
     updated_at`
 
 func (r *Repository) GetMenu(ctx context.Context, establishmentID int64) (domain.Menu, error) {
-	establishment, err := r.GetEstablishment(ctx, establishmentID)
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
 	if err != nil {
-		return domain.Menu{}, fmt.Errorf("get menu establishment: %w", err)
+		return domain.Menu{}, fmt.Errorf("begin menu snapshot: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	query := `SELECT ` + establishmentColumns + ` FROM establishments WHERE id = $1`
+	establishment, err := scanEstablishment(tx.QueryRow(ctx, query, establishmentID))
+	if err != nil {
+		return domain.Menu{}, establishmentError("get menu establishment", err)
 	}
 
-	categories, err := r.listCategories(ctx, establishmentID)
+	categories, err := listCategories(ctx, tx, establishmentID)
 	if err != nil {
 		return domain.Menu{}, err
 	}
 
-	dishes, err := r.listDishes(ctx, establishmentID)
+	dishes, err := listDishes(ctx, tx, establishmentID)
 	if err != nil {
 		return domain.Menu{}, err
 	}
@@ -63,10 +75,16 @@ func (r *Repository) GetMenu(ctx context.Context, establishmentID int64) (domain
 		menuCategories[index].Dishes = append(menuCategories[index].Dishes, dish)
 	}
 
-	return domain.Menu{
+	menu := domain.Menu{
 		Establishment: establishment,
 		Categories:    menuCategories,
-	}, nil
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Menu{}, fmt.Errorf("commit menu snapshot: %w", err)
+	}
+
+	return menu, nil
 }
 
 func (r *Repository) CreateCategory(
@@ -107,34 +125,6 @@ RETURNING ` + categoryColumns
 	}
 
 	return category, nil
-}
-
-func (r *Repository) GetDish(
-	ctx context.Context,
-	establishmentID int64,
-	dishID int64,
-) (domain.Dish, error) {
-	query := `
-SELECT
-    d.id,
-    d.category_id,
-    d.name,
-    d.description,
-    d.price_minor,
-    d.is_available,
-    d.created_at,
-    d.updated_at
-FROM dishes AS d
-JOIN menu_categories AS c ON c.id = d.category_id
-WHERE d.id = $2
-  AND c.establishment_id = $1`
-
-	dish, err := scanDish(r.pool.QueryRow(ctx, query, establishmentID, dishID))
-	if err != nil {
-		return domain.Dish{}, menuError("get dish", err)
-	}
-
-	return dish, nil
 }
 
 func (r *Repository) CreateDish(
@@ -181,15 +171,16 @@ RETURNING ` + dishColumns
 func (r *Repository) UpdateDish(
 	ctx context.Context,
 	establishmentID int64,
-	dish domain.Dish,
+	dishID int64,
+	patch domain.DishPatch,
 ) (domain.Dish, error) {
 	query := `
 UPDATE dishes AS d
-SET category_id = $3,
-    name = $4,
-    description = $5,
-    price_minor = $6,
-    is_available = $7,
+SET category_id = COALESCE($3::BIGINT, d.category_id),
+    name = COALESCE($4::TEXT, d.name),
+    description = COALESCE($5::TEXT, d.description),
+    price_minor = COALESCE($6::BIGINT, d.price_minor),
+    is_available = COALESCE($7::BOOLEAN, d.is_available),
     updated_at = NOW()
 WHERE d.id = $2
   AND EXISTS (
@@ -201,7 +192,7 @@ WHERE d.id = $2
   AND EXISTS (
       SELECT 1
       FROM menu_categories AS new_category
-      WHERE new_category.id = $3
+      WHERE new_category.id = COALESCE($3::BIGINT, d.category_id)
         AND new_category.establishment_id = $1
   )
 RETURNING ` + dishColumns
@@ -210,12 +201,12 @@ RETURNING ` + dishColumns
 		ctx,
 		query,
 		establishmentID,
-		dish.ID,
-		dish.CategoryID,
-		dish.Name,
-		dish.Description,
-		dish.PriceMinor,
-		dish.IsAvailable,
+		dishID,
+		patch.CategoryID,
+		patch.Name,
+		patch.Description,
+		patch.PriceMinor,
+		patch.IsAvailable,
 	))
 	if err != nil {
 		return domain.Dish{}, menuError("update dish", err)
@@ -224,8 +215,13 @@ RETURNING ` + dishColumns
 	return updated, nil
 }
 
-func (r *Repository) listCategories(
+type menuQueryer interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func listCategories(
 	ctx context.Context,
+	queryer menuQueryer,
 	establishmentID int64,
 ) ([]domain.Category, error) {
 	query := `
@@ -234,7 +230,7 @@ FROM menu_categories
 WHERE establishment_id = $1
 ORDER BY id`
 
-	rows, err := r.pool.Query(ctx, query, establishmentID)
+	rows, err := queryer.Query(ctx, query, establishmentID)
 	if err != nil {
 		return nil, fmt.Errorf("list categories: %w", err)
 	}
@@ -257,8 +253,9 @@ ORDER BY id`
 	return categories, nil
 }
 
-func (r *Repository) listDishes(
+func listDishes(
 	ctx context.Context,
+	queryer menuQueryer,
 	establishmentID int64,
 ) ([]domain.Dish, error) {
 	query := `
@@ -276,7 +273,7 @@ JOIN menu_categories AS c ON c.id = d.category_id
 WHERE c.establishment_id = $1
 ORDER BY d.id`
 
-	rows, err := r.pool.Query(ctx, query, establishmentID)
+	rows, err := queryer.Query(ctx, query, establishmentID)
 	if err != nil {
 		return nil, fmt.Errorf("list dishes: %w", err)
 	}

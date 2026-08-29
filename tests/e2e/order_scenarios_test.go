@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,7 +30,7 @@ type testClient struct {
 
 func TestOrderScenarios(t *testing.T) {
 	if os.Getenv("E2E") != "1" {
-		t.Skip("set E2E=1 and start postgres, migrations and kitchen")
+		t.Skip("set E2E=1 and start postgres, migrations and kitchen without establishment worker")
 	}
 
 	client := newTestClient()
@@ -111,6 +113,184 @@ func TestOrderScenarios(t *testing.T) {
 			t.Fatalf("completed order = %+v", tracked)
 		}
 	})
+
+	t.Run("partner rejection", func(t *testing.T) {
+		request := newOrderRequest(establishment.ID, dish, 1)
+		request.CustomerName = fmt.Sprintf("E2E rejection %d", time.Now().UnixNano())
+		created := client.createOrder(t, request)
+		orderID := client.findPendingOrder(t, request.CustomerName)
+
+		client.updateStatusBody(t, orderID, map[string]string{
+			"status":           "rejected",
+			"rejection_reason": "overloaded",
+		}, http.StatusOK)
+
+		tracked := client.getTrackedOrder(t, created.TrackingToken)
+		if string(tracked.Status) != "rejected" || tracked.RejectionReason == nil ||
+			string(*tracked.RejectionReason) != "overloaded" {
+			t.Fatalf("rejected order = %+v", tracked)
+		}
+	})
+
+	t.Run("cancel confirm race", func(t *testing.T) {
+		request := newOrderRequest(establishment.ID, dish, 1)
+		request.CustomerName = fmt.Sprintf("E2E race %d", time.Now().UnixNano())
+		created := client.createOrder(t, request)
+		orderID := client.findPendingOrder(t, request.CustomerName)
+
+		type raceResult struct {
+			operation string
+			status    int
+			err       error
+		}
+
+		start := make(chan struct{})
+		results := make(chan raceResult, 2)
+		var waitGroup sync.WaitGroup
+		waitGroup.Add(2)
+		ctx := t.Context()
+
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			status, _, err := client.doRequest(
+				ctx,
+				http.MethodPost,
+				"/api/v1/orders/cancel",
+				nil,
+				map[string]string{"X-Tracking-Token": created.TrackingToken},
+			)
+			results <- raceResult{operation: "cancel", status: status, err: err}
+		}()
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			status, _, err := client.doRequest(
+				ctx,
+				http.MethodPatch,
+				fmt.Sprintf("/api/v1/partner/orders/%d/status", orderID),
+				map[string]string{"status": "confirmed"},
+				client.partnerHeaders(),
+			)
+			results <- raceResult{operation: "confirm", status: status, err: err}
+		}()
+
+		close(start)
+		waitGroup.Wait()
+		close(results)
+
+		successes := 0
+		conflicts := 0
+		for result := range results {
+			if result.err != nil {
+				t.Fatalf("%s request failed: %v", result.operation, result.err)
+			}
+			switch result.status {
+			case http.StatusOK:
+				successes++
+			case http.StatusConflict:
+				conflicts++
+			default:
+				t.Fatalf("%s status = %d, want 200 or 409", result.operation, result.status)
+			}
+		}
+		if successes != 1 || conflicts != 1 {
+			t.Fatalf("race results: successes = %d, conflicts = %d", successes, conflicts)
+		}
+
+		tracked := client.getTrackedOrder(t, created.TrackingToken)
+		if status := string(tracked.Status); status != "cancelled" && status != "confirmed" {
+			t.Fatalf("status after race = %q, want cancelled or confirmed", status)
+		}
+	})
+
+	t.Run("confirmation timeout", func(t *testing.T) {
+		request := newOrderRequest(establishment.ID, dish, 1)
+		request.CustomerName = fmt.Sprintf("E2E timeout %d", time.Now().UnixNano())
+		created := client.createOrder(t, request)
+
+		deadline := time.Now().Add(durationFromEnv(t, "E2E_CONFIRMATION_WAIT", 3*time.Minute))
+		for time.Now().Before(deadline) {
+			tracked := client.getTrackedOrder(t, created.TrackingToken)
+			if string(tracked.Status) == "rejected" {
+				if tracked.RejectionReason == nil ||
+					string(*tracked.RejectionReason) != "confirmation_timeout" {
+					t.Fatalf("timed out order = %+v", tracked)
+				}
+				return
+			}
+			if string(tracked.Status) != "pending_confirmation" {
+				t.Fatalf("status before timeout = %q", tracked.Status)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		t.Fatal("order was not rejected by confirmation timeout")
+	})
+
+	t.Run("request limits", func(t *testing.T) {
+		exactItems := newRepeatedOrderRequest(establishment.ID, dish, 50, 1)
+		created := client.createOrder(t, exactItems)
+		if created.TotalMinor != dish.PriceMinor*50 {
+			t.Fatalf("50 item total = %d, want %d", created.TotalMinor, dish.PriceMinor*50)
+		}
+
+		tooManyItems := newRepeatedOrderRequest(establishment.ID, dish, 51, 1)
+		client.request(
+			t,
+			http.MethodPost,
+			"/api/v1/orders",
+			tooManyItems,
+			nil,
+			http.StatusBadRequest,
+			nil,
+		)
+
+		exactQuantity := newRepeatedOrderRequest(establishment.ID, dish, 2, 50)
+		created = client.createOrder(t, exactQuantity)
+		if created.TotalMinor != dish.PriceMinor*100 {
+			t.Fatalf("quantity 100 total = %d, want %d", created.TotalMinor, dish.PriceMinor*100)
+		}
+
+		tooLargeQuantity := newRepeatedOrderRequest(establishment.ID, dish, 2, 50)
+		tooLargeQuantity.OrderItems[1].Quantity = 51
+		client.request(
+			t,
+			http.MethodPost,
+			"/api/v1/orders",
+			tooLargeQuantity,
+			nil,
+			http.StatusBadRequest,
+			nil,
+		)
+
+		oversized := newOrderRequest(establishment.ID, dish, 1)
+		comment := strings.Repeat("x", (1<<20)+1)
+		oversized.Comment = &comment
+		client.request(
+			t,
+			http.MethodPost,
+			"/api/v1/orders",
+			oversized,
+			nil,
+			http.StatusRequestEntityTooLarge,
+			nil,
+		)
+	})
+}
+
+func durationFromEnv(t *testing.T, name string, fallback time.Duration) time.Duration {
+	t.Helper()
+
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	return duration
 }
 
 func newTestClient() *testClient {
@@ -207,6 +387,24 @@ func newOrderRequest(establishmentID int64, dish api.MenuDish, quantity int32) a
 	}
 }
 
+func newRepeatedOrderRequest(
+	establishmentID int64,
+	dish api.MenuDish,
+	itemCount int,
+	quantity int32,
+) api.CreateOrderRequest {
+	request := newOrderRequest(establishmentID, dish, quantity)
+	request.OrderItems = make([]api.CreateOrderItemRequest, itemCount)
+	for index := range request.OrderItems {
+		request.OrderItems[index] = api.CreateOrderItemRequest{
+			DishID:                 dish.ID,
+			Quantity:               quantity,
+			ExpectedUnitPriceMinor: dish.PriceMinor,
+		}
+	}
+	return request
+}
+
 func (c *testClient) createOrder(t *testing.T, request api.CreateOrderRequest) api.CreatedOrder {
 	t.Helper()
 
@@ -260,6 +458,16 @@ func (c *testClient) findPendingOrder(t *testing.T, customerName string) int64 {
 
 func (c *testClient) updateStatus(t *testing.T, orderID int64, status string, wantStatus int) {
 	t.Helper()
+	c.updateStatusBody(t, orderID, map[string]string{"status": status}, wantStatus)
+}
+
+func (c *testClient) updateStatusBody(
+	t *testing.T,
+	orderID int64,
+	body map[string]string,
+	wantStatus int,
+) {
+	t.Helper()
 
 	var response api.UpdateOrderStatusResponse
 	var result any
@@ -270,13 +478,14 @@ func (c *testClient) updateStatus(t *testing.T, orderID int64, status string, wa
 		t,
 		http.MethodPatch,
 		fmt.Sprintf("/api/v1/partner/orders/%d/status", orderID),
-		map[string]string{"status": status},
+		body,
 		c.partnerHeaders(),
 		wantStatus,
 		result,
 	)
-	if wantStatus == http.StatusOK && (response.ID != orderID || string(response.Status) != status) {
-		t.Fatalf("status response = %+v, want order %d in %s", response, orderID, status)
+	if wantStatus == http.StatusOK &&
+		(response.ID != orderID || string(response.Status) != body["status"]) {
+		t.Fatalf("status response = %+v, want order %d in %s", response, orderID, body["status"])
 	}
 }
 
@@ -295,18 +504,46 @@ func (c *testClient) request(
 ) {
 	t.Helper()
 
+	status, responseBody, err := c.doRequest(t.Context(), method, path, body, headers)
+	if err != nil {
+		t.Fatalf("execute %s %s: %v", method, path, err)
+	}
+	if status != wantStatus {
+		t.Fatalf(
+			"%s %s status = %d, want %d, body = %s",
+			method,
+			path,
+			status,
+			wantStatus,
+			responseBody,
+		)
+	}
+	if result != nil {
+		if err := json.Unmarshal(responseBody, result); err != nil {
+			t.Fatalf("decode %s %s response: %v, body = %s", method, path, err, responseBody)
+		}
+	}
+}
+
+func (c *testClient) doRequest(
+	ctx context.Context,
+	method string,
+	path string,
+	body any,
+	headers map[string]string,
+) (int, []byte, error) {
 	reader := io.Reader(http.NoBody)
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			t.Fatalf("encode %s %s request: %v", method, path, err)
+			return 0, nil, fmt.Errorf("encode request: %w", err)
 		}
 		reader = bytes.NewReader(encoded)
 	}
 
-	request, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, reader)
+	request, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
 	if err != nil {
-		t.Fatalf("create %s %s request: %v", method, path, err)
+		return 0, nil, fmt.Errorf("create request: %w", err)
 	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
@@ -317,27 +554,14 @@ func (c *testClient) request(
 
 	response, err := c.http.Do(request)
 	if err != nil {
-		t.Fatalf("execute %s %s: %v", method, path, err)
+		return 0, nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
 
 	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
-		t.Fatalf("read %s %s response: %v", method, path, err)
+		return 0, nil, fmt.Errorf("read response: %w", err)
 	}
-	if response.StatusCode != wantStatus {
-		t.Fatalf(
-			"%s %s status = %d, want %d, body = %s",
-			method,
-			path,
-			response.StatusCode,
-			wantStatus,
-			responseBody,
-		)
-	}
-	if result != nil {
-		if err := json.Unmarshal(responseBody, result); err != nil {
-			t.Fatalf("decode %s %s response: %v, body = %s", method, path, err, responseBody)
-		}
-	}
+
+	return response.StatusCode, responseBody, nil
 }

@@ -12,9 +12,8 @@ type menuRepository interface {
 	GetMenu(context.Context, int64) (domain.Menu, error)
 	CreateCategory(context.Context, int64, string) (domain.Category, error)
 	UpdateCategory(context.Context, int64, int64, string) (domain.Category, error)
-	GetDish(context.Context, int64, int64) (domain.Dish, error)
 	CreateDish(context.Context, int64, domain.Dish) (domain.Dish, error)
-	UpdateDish(context.Context, int64, domain.Dish) (domain.Dish, error)
+	UpdateDish(context.Context, int64, int64, domain.DishPatch) (domain.Dish, error)
 }
 
 type MenuService struct {
@@ -125,40 +124,36 @@ func (s *MenuService) UpdateDish(
 		return domain.Dish{}, domain.ErrInvalidInput
 	}
 
-	dish, err := s.repository.GetDish(ctx, establishmentID, dishID)
-	if err != nil {
-		return domain.Dish{}, fmt.Errorf("get dish for update: %w", err)
-	}
-
 	if patch.CategoryID != nil {
 		if *patch.CategoryID < 1 {
 			return domain.Dish{}, domain.ErrInvalidInput
 		}
-		dish.CategoryID = *patch.CategoryID
 	}
 	if patch.Name != nil {
-		dish.Name, err = normalizeName(*patch.Name, 200)
+		name, err := normalizeName(*patch.Name, 200)
 		if err != nil {
 			return domain.Dish{}, err
 		}
+		patch.Name = &name
 	}
 	if patch.Description != nil {
 		if len([]rune(*patch.Description)) > 2000 {
 			return domain.Dish{}, domain.ErrInvalidInput
 		}
-		dish.Description = *patch.Description
 	}
 	if patch.PriceMinor != nil {
 		if *patch.PriceMinor < 0 {
 			return domain.Dish{}, domain.ErrInvalidInput
 		}
-		dish.PriceMinor = *patch.PriceMinor
-	}
-	if patch.IsAvailable != nil {
-		dish.IsAvailable = *patch.IsAvailable
 	}
 
-	updated, err := s.repository.UpdateDish(ctx, establishmentID, dish)
+	updated, err := s.repository.UpdateDish(ctx, establishmentID, dishID, domain.DishPatch{
+		CategoryID:  patch.CategoryID,
+		Name:        patch.Name,
+		Description: patch.Description,
+		PriceMinor:  patch.PriceMinor,
+		IsAvailable: patch.IsAvailable,
+	})
 	if err != nil {
 		return domain.Dish{}, fmt.Errorf("update dish: %w", err)
 	}

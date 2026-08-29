@@ -21,6 +21,16 @@ type Dish struct {
 	UpdatedAt   time.Time
 }
 
+// DishPatch contains only fields explicitly supplied by a partner.
+// Nil fields must remain unchanged in storage.
+type DishPatch struct {
+	CategoryID  *int64
+	Name        *string
+	Description *string
+	PriceMinor  *int64
+	IsAvailable *bool
+}
+
 type Menu struct {
 	Establishment Establishment
 	Categories    []MenuCategory

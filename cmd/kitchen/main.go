@@ -81,7 +81,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	routes := api.HandlerFromMux(strictHandler, router)
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
-		Handler:           handler.OpenAPIValidator(spec)(routes),
+		Handler:           handler.RequestBodyLimit(handler.OpenAPIValidator(spec)(routes)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

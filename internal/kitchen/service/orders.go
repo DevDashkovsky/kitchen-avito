@@ -11,6 +11,11 @@ import (
 	"kitchen-api/internal/kitchen/domain"
 )
 
+const (
+	maxOrderItems        = 50
+	maxOrderItemQuantity = int32(100)
+)
+
 type orderRepository interface {
 	GetEstablishment(context.Context, int64) (domain.Establishment, error)
 	GetOrderDishes(context.Context, int64, []int64) ([]domain.Dish, error)
@@ -338,7 +343,8 @@ func normalizeCreateOrderInput(input CreateOrderInput) (CreateOrderInput, error)
 	input.CustomerPhone = strings.TrimSpace(input.CustomerPhone)
 	input.DeliveryAddress = strings.TrimSpace(input.DeliveryAddress)
 
-	if input.EstablishmentID < 1 || len(input.TrackingTokenHash) == 0 || len(input.Items) == 0 ||
+	if input.EstablishmentID < 1 || len(input.TrackingTokenHash) == 0 ||
+		len(input.Items) == 0 || len(input.Items) > maxOrderItems ||
 		len([]rune(input.CustomerName)) < 1 || len([]rune(input.CustomerName)) > 200 ||
 		len([]rune(input.CustomerPhone)) < 5 || len([]rune(input.CustomerPhone)) > 32 ||
 		len([]rune(input.DeliveryAddress)) < 1 || len([]rune(input.DeliveryAddress)) > 500 ||
@@ -355,7 +361,8 @@ func combineOrderItems(items []CreateOrderItem) ([]CreateOrderItem, []int64, err
 	dishIDs := make([]int64, 0, len(items))
 
 	for _, item := range items {
-		if item.DishID < 1 || item.Quantity < 1 || item.ExpectedUnitPriceMinor < 0 {
+		if item.DishID < 1 || item.Quantity < 1 || item.Quantity > maxOrderItemQuantity ||
+			item.ExpectedUnitPriceMinor < 0 {
 			return nil, nil, domain.ErrInvalidInput
 		}
 
@@ -368,7 +375,7 @@ func combineOrderItems(items []CreateOrderItem) ([]CreateOrderItem, []int64, err
 		}
 
 		if combined[index].ExpectedUnitPriceMinor != item.ExpectedUnitPriceMinor ||
-			item.Quantity > math.MaxInt32-combined[index].Quantity {
+			item.Quantity > maxOrderItemQuantity-combined[index].Quantity {
 			return nil, nil, domain.ErrInvalidInput
 		}
 		combined[index].Quantity += item.Quantity
