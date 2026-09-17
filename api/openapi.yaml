@@ -350,13 +350,15 @@ paths:
       summary: Получить заказы заведения
       description: |
         Используется для polling. По умолчанию возвращает первую пачку заказов
-        в pending_confirmation от самых старых к новым. Offset не используется,
-        чтобы изменение статусов не приводило к пропуску заказов.
+        в pending_confirmation от самых старых к новым. Следующие страницы
+        запрашиваются по непрозрачному cursor, поэтому изменение статусов не
+        приводит к пропуску заказов.
       security:
         - PartnerApiKey: []
       parameters:
         - $ref: '#/components/parameters/OrderStatusFilter'
         - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
       responses:
         '200':
           description: Заказы заведения
@@ -481,6 +483,15 @@ components:
         format: int64
         minimum: 0
         default: 0
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Непрозрачный cursor следующей страницы из предыдущего ответа
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 512
     EstablishmentId:
       name: establishmentId
       in: path
@@ -1086,6 +1097,7 @@ components:
       required:
         - orders
         - total
+        - next_cursor
       properties:
         orders:
           type: array
@@ -1095,6 +1107,10 @@ components:
           type: integer
           format: int64
           minimum: 0
+        next_cursor:
+          type: string
+          nullable: true
+          description: Cursor следующей страницы или null, если список закончен
 
     UpdateOrderStatusRequest:
       type: object

@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -22,7 +24,14 @@ type orderRepository interface {
 	CreateOrder(context.Context, domain.Order) (domain.Order, error)
 	GetOrderByTrackingTokenHash(context.Context, []byte) (domain.Order, error)
 	GetOrder(context.Context, int64, int64) (domain.Order, error)
-	ListOrders(context.Context, int64, domain.OrderStatus, int32) ([]domain.Order, int64, error)
+	ListOrders(
+		context.Context,
+		int64,
+		domain.OrderStatus,
+		int32,
+		*time.Time,
+		*int64,
+	) ([]domain.Order, int64, error)
 	UpdateOrderStatus(
 		context.Context,
 		int64,
@@ -31,17 +40,19 @@ type orderRepository interface {
 		domain.OrderStatus,
 		*domain.RejectionReason,
 		*string,
+		time.Duration,
 	) (domain.Order, error)
-	CancelOrder(context.Context, []byte) (domain.Order, error)
-	RejectExpiredOrders(context.Context, time.Time) (int64, error)
+	CancelOrder(context.Context, []byte, time.Duration) (domain.Order, error)
+	RejectExpiredOrders(context.Context, time.Duration) (int64, error)
 }
 
 type OrderService struct {
-	repository orderRepository
+	repository          orderRepository
+	confirmationTimeout time.Duration
 }
 
-func NewOrderService(repository orderRepository) *OrderService {
-	return &OrderService{repository: repository}
+func NewOrderService(repository orderRepository, confirmationTimeout time.Duration) *OrderService {
+	return &OrderService{repository: repository, confirmationTimeout: confirmationTimeout}
 }
 
 type CreateOrderItem struct {
@@ -121,6 +132,12 @@ func (s *OrderService) Create(
 		TotalMinor:        totalMinor,
 		Items:             items,
 	})
+	var menuChanged *domain.MenuChangedError
+	if errors.As(err, &menuChanged) {
+		return domain.Order{}, &OrderConflictError{
+			Conflicts: dishConflictsFromCurrentState(normalized.Items, menuChanged.Dishes),
+		}
+	}
 	if errors.Is(err, domain.ErrConflict) {
 		return domain.Order{}, &OrderConflictError{Conflicts: []DishConflict{}}
 	}
@@ -170,10 +187,13 @@ func (s *OrderService) Cancel(
 		return domain.Order{}, domain.ErrCancellationNotAllowed
 	}
 
-	cancelled, err := s.repository.CancelOrder(ctx, trackingTokenHash)
+	cancelled, err := s.repository.CancelOrder(ctx, trackingTokenHash, s.confirmationTimeout)
 	if !errors.Is(err, domain.ErrConflict) {
 		if err != nil {
 			return domain.Order{}, fmt.Errorf("cancel order: %w", err)
+		}
+		if cancelled.Status != domain.OrderStatusCancelled {
+			return domain.Order{}, domain.ErrCancellationNotAllowed
 		}
 		return cancelled, nil
 	}
@@ -194,17 +214,80 @@ func (s *OrderService) ListPartnerOrders(
 	establishmentID int64,
 	status domain.OrderStatus,
 	limit int32,
-) ([]domain.Order, int64, error) {
+	cursor *string,
+) ([]domain.Order, int64, *string, error) {
 	if !status.IsValid() || limit < 1 || limit > 100 {
-		return nil, 0, domain.ErrInvalidInput
+		return nil, 0, nil, domain.ErrInvalidInput
 	}
 
-	orders, total, err := s.repository.ListOrders(ctx, establishmentID, status, limit)
+	position, err := decodeOrderCursor(cursor)
 	if err != nil {
-		return nil, 0, fmt.Errorf("list partner orders: %w", err)
+		return nil, 0, nil, domain.ErrInvalidInput
 	}
 
-	return orders, total, nil
+	queryLimit := limit + 1
+	orders, total, err := s.repository.ListOrders(
+		ctx,
+		establishmentID,
+		status,
+		queryLimit,
+		position.createdAt,
+		position.id,
+	)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("list partner orders: %w", err)
+	}
+
+	var nextCursor *string
+	if len(orders) > int(limit) {
+		orders = orders[:limit]
+		encoded, encodeErr := encodeOrderCursor(orders[len(orders)-1])
+		if encodeErr != nil {
+			return nil, 0, nil, fmt.Errorf("encode next order cursor: %w", encodeErr)
+		}
+		nextCursor = &encoded
+	}
+
+	return orders, total, nextCursor, nil
+}
+
+type orderCursor struct {
+	CreatedAt time.Time `json:"created_at"`
+	ID        int64     `json:"id"`
+}
+
+type decodedOrderCursor struct {
+	createdAt *time.Time
+	id        *int64
+}
+
+func decodeOrderCursor(cursor *string) (decodedOrderCursor, error) {
+	if cursor == nil {
+		return decodedOrderCursor{}, nil
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(*cursor)
+	if err != nil {
+		return decodedOrderCursor{}, fmt.Errorf("decode cursor: %w", err)
+	}
+
+	var decoded orderCursor
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return decodedOrderCursor{}, fmt.Errorf("unmarshal cursor: %w", err)
+	}
+	if decoded.ID < 1 || decoded.CreatedAt.IsZero() {
+		return decodedOrderCursor{}, fmt.Errorf("invalid cursor values")
+	}
+
+	return decodedOrderCursor{createdAt: &decoded.CreatedAt, id: &decoded.ID}, nil
+}
+
+func encodeOrderCursor(order domain.Order) (string, error) {
+	payload, err := json.Marshal(orderCursor{CreatedAt: order.CreatedAt, ID: order.ID})
+	if err != nil {
+		return "", fmt.Errorf("marshal cursor: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(payload), nil
 }
 
 func (s *OrderService) GetPartnerOrder(
@@ -251,10 +334,18 @@ func (s *OrderService) UpdatePartnerStatus(
 		nextStatus,
 		rejectionReason,
 		rejectionComment,
+		s.confirmationTimeout,
 	)
 	if !errors.Is(err, domain.ErrConflict) {
 		if err != nil {
 			return domain.Order{}, fmt.Errorf("update partner order status: %w", err)
+		}
+		if updated.RejectionReason != nil &&
+			*updated.RejectionReason == domain.RejectionReasonConfirmationTimeout {
+			return domain.Order{}, domain.ErrInvalidStatusTransition
+		}
+		if updated.Status != nextStatus {
+			return domain.Order{}, domain.ErrInvalidStatusTransition
 		}
 		return updated, nil
 	}
@@ -270,13 +361,51 @@ func (s *OrderService) UpdatePartnerStatus(
 	return domain.Order{}, domain.ErrInvalidStatusTransition
 }
 
-func (s *OrderService) RejectExpired(ctx context.Context, createdBefore time.Time) (int64, error) {
-	rejected, err := s.repository.RejectExpiredOrders(ctx, createdBefore)
+func (s *OrderService) RejectExpired(ctx context.Context, confirmationTimeout time.Duration) (int64, error) {
+	rejected, err := s.repository.RejectExpiredOrders(ctx, confirmationTimeout)
 	if err != nil {
 		return 0, fmt.Errorf("reject expired orders: %w", err)
 	}
 
 	return rejected, nil
+}
+
+func dishConflictsFromCurrentState(
+	requested []CreateOrderItem,
+	dishes []domain.Dish,
+) []DishConflict {
+	dishesByID := make(map[int64]domain.Dish, len(dishes))
+	for _, dish := range dishes {
+		dishesByID[dish.ID] = dish
+	}
+
+	conflicts := make([]DishConflict, 0)
+	processed := make(map[int64]struct{}, len(requested))
+	for _, item := range requested {
+		if _, exists := processed[item.DishID]; exists {
+			continue
+		}
+		processed[item.DishID] = struct{}{}
+
+		dish, found := dishesByID[item.DishID]
+		if !found || !dish.IsAvailable {
+			conflicts = append(conflicts, DishConflict{
+				DishID: item.DishID,
+				Reason: DishConflictDishUnavailable,
+			})
+			continue
+		}
+		if dish.PriceMinor != item.ExpectedUnitPriceMinor {
+			currentPrice := dish.PriceMinor
+			conflicts = append(conflicts, DishConflict{
+				DishID:                item.DishID,
+				Reason:                DishConflictPriceChanged,
+				CurrentUnitPriceMinor: &currentPrice,
+			})
+		}
+	}
+
+	return conflicts
 }
 
 func (s *OrderService) prepareOrderItems(

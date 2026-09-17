@@ -299,8 +299,10 @@ type PartnerOrder struct {
 
 // PartnerOrderListResponse defines model for PartnerOrderListResponse.
 type PartnerOrderListResponse struct {
-	Orders []PartnerOrder `json:"orders"`
-	Total  int64          `json:"total"`
+	// NextCursor Cursor следующей страницы или null, если список закончен
+	NextCursor *string        `json:"next_cursor"`
+	Orders     []PartnerOrder `json:"orders"`
+	Total      int64          `json:"total"`
 }
 
 // PartnerRejectionReason defines model for PartnerRejectionReason.
@@ -353,6 +355,9 @@ type ValidationErrorResponseCode string
 // CategoryID defines model for CategoryId.
 type CategoryID = int64
 
+// Cursor defines model for Cursor.
+type Cursor = string
+
 // DishID defines model for DishId.
 type DishID = int64
 
@@ -390,6 +395,9 @@ type ListPartnerOrdersParams struct {
 
 	// Limit Максимальное количество записей в ответе
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Непрозрачный cursor следующей страницы из предыдущего ответа
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
 // CreateCategoryJSONRequestBody defines body for CreateCategory for application/json ContentType.
@@ -562,8 +570,9 @@ type ClientInterface interface {
 	// ListPartnerOrders Получить заказы заведения
 	//
 	// Используется для polling. По умолчанию возвращает первую пачку заказов
-	// в pending_confirmation от самых старых к новым. Offset не используется,
-	// чтобы изменение статусов не приводило к пропуску заказов.
+	// в pending_confirmation от самых старых к новым. Следующие страницы
+	// запрашиваются по непрозрачному cursor, поэтому изменение статусов не
+	// приводит к пропуску заказов.
 	//
 	// Corresponds with GET /api/v1/partner/orders (the `ListPartnerOrders` operationId).
 	ListPartnerOrders(ctx context.Context, params *ListPartnerOrdersParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -785,8 +794,9 @@ func (c *Client) GetPartnerMenu(ctx context.Context, reqEditors ...RequestEditor
 // ListPartnerOrders Получить заказы заведения
 //
 // Используется для polling. По умолчанию возвращает первую пачку заказов
-// в pending_confirmation от самых старых к новым. Offset не используется,
-// чтобы изменение статусов не приводило к пропуску заказов.
+// в pending_confirmation от самых старых к новым. Следующие страницы
+// запрашиваются по непрозрачному cursor, поэтому изменение статусов не
+// приводит к пропуску заказов.
 //
 // Corresponds with GET /api/v1/partner/orders (the `ListPartnerOrders` operationId).
 func (c *Client) ListPartnerOrders(ctx context.Context, params *ListPartnerOrdersParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -1152,6 +1162,18 @@ func NewListPartnerOrdersRequest(server string, params *ListPartnerOrdersParams)
 
 		}
 
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
 		if encoded := queryValues.Encode(); encoded != "" {
 			rawQueryFragments = append(rawQueryFragments, encoded)
 		}
@@ -1371,8 +1393,9 @@ type ClientWithResponsesInterface interface {
 	// ListPartnerOrdersWithResponse Получить заказы заведения
 	//
 	// Используется для polling. По умолчанию возвращает первую пачку заказов
-	// в pending_confirmation от самых старых к новым. Offset не используется,
-	// чтобы изменение статусов не приводило к пропуску заказов.
+	// в pending_confirmation от самых старых к новым. Следующие страницы
+	// запрашиваются по непрозрачному cursor, поэтому изменение статусов не
+	// приводит к пропуску заказов.
 	//
 	// Returns a wrapper object for the known response body format(s).
 	//
@@ -2198,8 +2221,9 @@ func (c *ClientWithResponses) GetPartnerMenuWithResponse(ctx context.Context, re
 // ListPartnerOrdersWithResponse Получить заказы заведения
 //
 // Используется для polling. По умолчанию возвращает первую пачку заказов
-// в pending_confirmation от самых старых к новым. Offset не используется,
-// чтобы изменение статусов не приводило к пропуску заказов.
+// в pending_confirmation от самых старых к новым. Следующие страницы
+// запрашиваются по непрозрачному cursor, поэтому изменение статусов не
+// приводит к пропуску заказов.
 //
 // Returns a wrapper object for the known response body format(s).
 //

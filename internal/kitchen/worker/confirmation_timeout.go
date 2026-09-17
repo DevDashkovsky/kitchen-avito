@@ -7,7 +7,7 @@ import (
 )
 
 type confirmationTimeoutService interface {
-	RejectExpired(context.Context, time.Time) (int64, error)
+	RejectExpired(context.Context, time.Duration) (int64, error)
 }
 
 type ConfirmationTimeout struct {
@@ -48,8 +48,7 @@ func (w *ConfirmationTimeout) Run(ctx context.Context) {
 }
 
 func (w *ConfirmationTimeout) process(ctx context.Context) {
-	createdBefore := time.Now().Add(-w.timeout)
-	rejected, err := w.service.RejectExpired(ctx, createdBefore)
+	rejected, err := w.service.RejectExpired(ctx, w.timeout)
 	if err != nil {
 		if ctx.Err() == nil {
 			w.logger.Error("reject expired orders", "error", err)

@@ -222,6 +222,8 @@ func (r *Repository) ListOrders(
 	establishmentID int64,
 	status domain.OrderStatus,
 	limit int32,
+	cursorCreatedAt *time.Time,
+	cursorID *int64,
 ) ([]domain.Order, int64, error) {
 	var total int64
 	err := r.pool.QueryRow(ctx, `
@@ -238,10 +240,19 @@ SELECT ` + orderColumns + `
 FROM orders
 WHERE establishment_id = $1
   AND status = $2
+  AND ($3::TIMESTAMPTZ IS NULL OR (created_at, id) > ($3, $4))
 ORDER BY created_at, id
-LIMIT $3`
+LIMIT $5`
 
-	rows, err := r.pool.Query(ctx, query, establishmentID, status, limit)
+	rows, err := r.pool.Query(
+		ctx,
+		query,
+		establishmentID,
+		status,
+		cursorCreatedAt,
+		cursorID,
+		limit,
+	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list orders: %w", err)
 	}
@@ -282,12 +293,28 @@ func (r *Repository) UpdateOrderStatus(
 	nextStatus domain.OrderStatus,
 	rejectionReason *domain.RejectionReason,
 	rejectionComment *string,
+	confirmationTimeout time.Duration,
 ) (domain.Order, error) {
 	query := `
 UPDATE orders
-SET status = $4,
-    rejection_reason = $5,
-    rejection_comment = $6,
+SET status = CASE
+        WHEN status = 'pending_confirmation'
+         AND created_at <= NOW() - $7::interval
+        THEN 'rejected'
+        ELSE $4
+    END,
+    rejection_reason = CASE
+        WHEN status = 'pending_confirmation'
+         AND created_at <= NOW() - $7::interval
+        THEN 'confirmation_timeout'
+        ELSE $5
+    END,
+    rejection_comment = CASE
+        WHEN status = 'pending_confirmation'
+         AND created_at <= NOW() - $7::interval
+        THEN NULL
+        ELSE $6
+    END,
     updated_at = NOW()
 WHERE id = $2
   AND establishment_id = $1
@@ -303,6 +330,7 @@ RETURNING ` + orderColumns
 		nextStatus,
 		rejectionReasonValue(rejectionReason),
 		rejectionComment,
+		confirmationTimeout.String(),
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Order{}, fmt.Errorf("update order status: %w", domain.ErrConflict)
@@ -317,16 +345,25 @@ RETURNING ` + orderColumns
 func (r *Repository) CancelOrder(
 	ctx context.Context,
 	trackingTokenHash []byte,
+	confirmationTimeout time.Duration,
 ) (domain.Order, error) {
 	query := `
 UPDATE orders
-SET status = 'cancelled',
+SET status = CASE
+        WHEN created_at <= NOW() - $2::interval THEN 'rejected'
+        ELSE 'cancelled'
+    END,
+    rejection_reason = CASE
+        WHEN created_at <= NOW() - $2::interval THEN 'confirmation_timeout'
+        ELSE NULL
+    END,
+    rejection_comment = NULL,
     updated_at = NOW()
 WHERE tracking_token_hash = $1
   AND status = 'pending_confirmation'
 RETURNING ` + orderColumns
 
-	order, err := scanOrder(r.pool.QueryRow(ctx, query, trackingTokenHash))
+	order, err := scanOrder(r.pool.QueryRow(ctx, query, trackingTokenHash, confirmationTimeout.String()))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Order{}, fmt.Errorf("cancel order: %w", domain.ErrConflict)
 	}
@@ -337,7 +374,7 @@ RETURNING ` + orderColumns
 	return order, nil
 }
 
-func (r *Repository) RejectExpiredOrders(ctx context.Context, createdBefore time.Time) (int64, error) {
+func (r *Repository) RejectExpiredOrders(ctx context.Context, confirmationTimeout time.Duration) (int64, error) {
 	commandTag, err := r.pool.Exec(ctx, `
         UPDATE orders
         SET status = 'rejected',
@@ -345,7 +382,7 @@ func (r *Repository) RejectExpiredOrders(ctx context.Context, createdBefore time
             rejection_comment = NULL,
             updated_at = NOW()
         WHERE status = 'pending_confirmation'
-          AND created_at < $1`, createdBefore)
+          AND created_at <= NOW() - $1::interval`, confirmationTimeout.String())
 	if err != nil {
 		return 0, fmt.Errorf("reject expired orders: %w", err)
 	}
@@ -355,14 +392,14 @@ func (r *Repository) RejectExpiredOrders(ctx context.Context, createdBefore time
 
 func lockAndCheckOrderDishes(ctx context.Context, tx pgx.Tx, order domain.Order) error {
 	dishIDs := make([]int64, len(order.Items))
-	requested := make(map[int64]domain.OrderItem, len(order.Items))
+	requestedIndexes := make(map[int64]int, len(order.Items))
 	for index, item := range order.Items {
 		if item.Quantity <= 0 {
 			return fmt.Errorf("check order item: %w", domain.ErrInvalidInput)
 		}
 
 		dishIDs[index] = item.DishID
-		requested[item.DishID] = item
+		requestedIndexes[item.DishID] = index
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -378,7 +415,8 @@ func lockAndCheckOrderDishes(ctx context.Context, tx pgx.Tx, order domain.Order)
 	}
 	defer rows.Close()
 
-	found := 0
+	currentDishes := make([]domain.Dish, 0, len(order.Items))
+	menuChanged := false
 	for rows.Next() {
 		var (
 			dishID      int64
@@ -391,19 +429,33 @@ func lockAndCheckOrderDishes(ctx context.Context, tx pgx.Tx, order domain.Order)
 			return fmt.Errorf("scan locked order dish: %w", err)
 		}
 
-		item, ok := requested[dishID]
-		if !ok || !isAvailable || item.DishName != dishName || item.UnitPriceMinor != priceMinor {
-			return fmt.Errorf("check locked order dish: %w", domain.ErrConflict)
+		index, ok := requestedIndexes[dishID]
+		if !ok {
+			menuChanged = true
+			continue
 		}
 
-		found++
+		currentDishes = append(currentDishes, domain.Dish{
+			ID:          dishID,
+			Name:        dishName,
+			PriceMinor:  priceMinor,
+			IsAvailable: isAvailable,
+		})
+		item := &order.Items[index]
+		item.DishName = dishName
+		if !isAvailable || item.UnitPriceMinor != priceMinor {
+			menuChanged = true
+		}
 	}
 
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate locked order dishes: %w", err)
 	}
-	if found != len(order.Items) {
-		return fmt.Errorf("check locked order dishes: %w", domain.ErrConflict)
+	if len(currentDishes) != len(order.Items) {
+		menuChanged = true
+	}
+	if menuChanged {
+		return &domain.MenuChangedError{Dishes: currentDishes}
 	}
 
 	return nil

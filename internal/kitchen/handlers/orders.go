@@ -152,7 +152,13 @@ func (h *Handler) ListPartnerOrders(
 		limit = *request.Params.Limit
 	}
 
-	orders, total, err := h.orders.ListPartnerOrders(ctx, establishmentID, status, limit)
+	orders, total, nextCursor, err := h.orders.ListPartnerOrders(
+		ctx,
+		establishmentID,
+		status,
+		limit,
+		request.Params.Cursor,
+	)
 	if errors.Is(err, domain.ErrInvalidInput) {
 		return api.ListPartnerOrders400JSONResponse{
 			BadRequestJSONResponse: badRequest("Некорректные параметры списка заказов"),
@@ -166,8 +172,9 @@ func (h *Handler) ListPartnerOrders(
 	}
 
 	return api.ListPartnerOrders200JSONResponse{
-		Orders: partnerOrdersToAPI(orders),
-		Total:  total,
+		Orders:     partnerOrdersToAPI(orders),
+		Total:      total,
+		NextCursor: nextCursor,
 	}, nil
 }
 

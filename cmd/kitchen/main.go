@@ -53,7 +53,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	repo := repository.New(pool)
 	establishmentService := service.NewEstablishmentService(repo)
 	menuService := service.NewMenuService(repo)
-	orderService := service.NewOrderService(repo)
+	orderService := service.NewOrderService(repo, cfg.ConfirmationTimeout)
 
 	handler := handlers.New(
 		establishmentService,
