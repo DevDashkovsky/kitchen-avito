@@ -31,6 +31,22 @@ services:
         condition: service_healthy
     restart: "no"
 
+  demo-seed:
+    image: postgres:16
+    environment:
+      PGPASSWORD: kitchen
+    volumes:
+      - ./seeds:/seeds:ro
+    entrypoint: ["psql"]
+    command:
+      - postgres://kitchen@postgres:5432/kitchen?sslmode=disable
+      - -f
+      - /seeds/demo.sql
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: "no"
+
   kitchen:
     build:
       context: .
@@ -40,12 +56,20 @@ services:
       DATABASE_URL: postgres://kitchen:kitchen@postgres:5432/kitchen?sslmode=disable
       CONFIRMATION_TIMEOUT: "${CONFIRMATION_TIMEOUT:-2m}"
       TIMEOUT_SCAN_INTERVAL: "${TIMEOUT_SCAN_INTERVAL:-5s}"
+      REQUEST_TIMEOUT: "${REQUEST_TIMEOUT:-15s}"
+      HEALTH_CHECK_TIMEOUT: "${HEALTH_CHECK_TIMEOUT:-2s}"
       SHUTDOWN_TIMEOUT: 10s
     ports:
       - "${KITCHEN_HOST_ADDRESS:-0.0.0.0}:${KITCHEN_HOST_PORT:-8080}:8080"
     depends_on:
-      migrations:
+      demo-seed:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
     restart: unless-stopped
 
   establishment:
@@ -60,7 +84,7 @@ services:
       SHUTDOWN_TIMEOUT: 10s
     depends_on:
       kitchen:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

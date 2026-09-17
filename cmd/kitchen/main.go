@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -67,21 +68,14 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return err
 	}
 
-	strictHandler := api.NewStrictHandlerWithOptions(
-		handler,
-		nil,
-		handler.StrictServerOptions(),
-	)
-
-	router := chi.NewRouter()
-	router.Use(middleware.RequestID)
-	router.Use(middleware.Recoverer)
-	router.Use(handler.RequestLogger)
-
-	routes := api.HandlerFromMux(strictHandler, router)
 	server := &http.Server{
-		Addr:              cfg.HTTPAddress,
-		Handler:           handler.RequestBodyLimit(handler.OpenAPIValidator(spec)(routes)),
+		Addr: cfg.HTTPAddress,
+		Handler: newHTTPHandler(
+			handler,
+			spec,
+			handler.Readiness(pool, cfg.HealthCheckTimeout),
+			cfg.RequestTimeout,
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -132,4 +126,37 @@ func run(ctx context.Context, logger *slog.Logger) error {
 
 	<-workerDone
 	return serveErr
+}
+
+func newHTTPHandler(
+	handler *handlers.Handler,
+	spec *openapi3.T,
+	readiness http.HandlerFunc,
+	requestTimeout time.Duration,
+) http.Handler {
+	strictHandler := api.NewStrictHandlerWithOptions(
+		handler,
+		nil,
+		handler.StrictServerOptions(),
+	)
+
+	apiRouter := chi.NewRouter()
+	apiRouter.NotFound(handler.NotFound)
+	apiRouter.MethodNotAllowed(handler.MethodNotAllowed)
+	businessAPI := api.HandlerWithOptions(strictHandler, api.ChiServerOptions{
+		BaseRouter: apiRouter,
+		Middlewares: []api.MiddlewareFunc{
+			handler.OpenAPIValidator(spec),
+			handler.RequestBodyLimit,
+		},
+	})
+
+	router := chi.NewRouter()
+	router.Use(middleware.RequestID)
+	router.Use(handler.RequestLogger)
+	router.Use(handler.RequestGuard(requestTimeout))
+	router.Get("/healthz", handler.Health)
+	router.Get("/readyz", readiness)
+	router.Mount("/", businessAPI)
+	return router
 }

@@ -10,6 +10,8 @@ const (
 	defaultHTTPAddress         = ":8080"
 	defaultConfirmationTimeout = 2 * time.Minute
 	defaultTimeoutScanInterval = 5 * time.Second
+	defaultRequestTimeout      = 15 * time.Second
+	defaultHealthCheckTimeout  = 2 * time.Second
 	defaultShutdownTimeout     = 10 * time.Second
 )
 
@@ -18,6 +20,8 @@ type Config struct {
 	DatabaseURL         string
 	ConfirmationTimeout time.Duration
 	TimeoutScanInterval time.Duration
+	RequestTimeout      time.Duration
+	HealthCheckTimeout  time.Duration
 	ShutdownTimeout     time.Duration
 }
 
@@ -43,6 +47,16 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	requestTimeout, err := durationFromEnv("REQUEST_TIMEOUT", defaultRequestTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
+	healthCheckTimeout, err := durationFromEnv("HEALTH_CHECK_TIMEOUT", defaultHealthCheckTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
 	shutdownTimeout, err := durationFromEnv("SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
 	if err != nil {
 		return Config{}, err
@@ -58,6 +72,8 @@ func Load() (Config, error) {
 		DatabaseURL:         databaseURL,
 		ConfirmationTimeout: confirmationTimeout,
 		TimeoutScanInterval: timeoutScanInterval,
+		RequestTimeout:      requestTimeout,
+		HealthCheckTimeout:  healthCheckTimeout,
 		ShutdownTimeout:     shutdownTimeout,
 	}, nil
 }

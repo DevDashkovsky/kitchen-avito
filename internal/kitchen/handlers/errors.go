@@ -3,10 +3,14 @@ package handlers
 import "kitchen-api/internal/kitchen/api"
 
 func badRequest(message string) api.BadRequestJSONResponse {
+	return badRequestWithFields(message, []api.FieldError{})
+}
+
+func badRequestWithFields(message string, fields []api.FieldError) api.BadRequestJSONResponse {
 	return api.BadRequestJSONResponse{
 		Code:    api.ValidationErrorResponseCodeValidationError,
 		Message: message,
-		Fields:  []api.FieldError{},
+		Fields:  fields,
 	}
 }
 
@@ -29,6 +33,13 @@ func internalError() api.InternalErrorJSONResponse {
 		api.ErrorResponseCodeInternalError,
 		"Внутренняя ошибка сервиса",
 	))
+}
+
+func gatewayTimeout() api.ErrorResponse {
+	return errorResponse(
+		api.ErrorResponseCodeInternalError,
+		"Время обработки запроса истекло",
+	)
 }
 
 func conflict(code api.ErrorResponseCode, message string) api.ConflictJSONResponse {

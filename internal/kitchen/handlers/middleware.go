@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -26,6 +28,10 @@ var (
 )
 
 const maxRequestBodyBytes int64 = 1 << 20
+
+type databasePinger interface {
+	Ping(context.Context) error
+}
 
 func (h *Handler) OpenAPIValidator(spec *openapi3.T) func(http.Handler) http.Handler {
 	return openapimiddleware.OapiRequestValidatorWithOptions(spec, &openapimiddleware.Options{
@@ -88,6 +94,125 @@ func (h *Handler) RequestLogger(next http.Handler) http.Handler {
 			"request_id", chimiddleware.GetReqID(r.Context()),
 		)
 	})
+}
+
+// RequestGuard isolates response writes until the handler has completed. This
+// lets the service return a consistent JSON error for both panics and request
+// deadlines without racing a handler that is unwinding after context cancel.
+func (h *Handler) RequestGuard(timeout time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+
+			buffered := newBufferedResponseWriter()
+			result := make(chan requestResult, 1)
+			go func() {
+				outcome := requestResult{}
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						outcome.panicValue = recovered
+						outcome.stack = debug.Stack()
+					}
+					result <- outcome
+				}()
+
+				next.ServeHTTP(buffered, r.WithContext(ctx))
+			}()
+
+			select {
+			case outcome := <-result:
+				if outcome.panicValue != nil {
+					h.logger.Error(
+						"request panicked",
+						"panic", outcome.panicValue,
+						"stack", string(outcome.stack),
+					)
+					writeJSON(w, http.StatusInternalServerError, internalError())
+					return
+				}
+				buffered.FlushTo(w)
+			case <-ctx.Done():
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					writeJSON(w, http.StatusGatewayTimeout, gatewayTimeout())
+				}
+			}
+		})
+	}
+}
+
+func (h *Handler) Health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) Readiness(pinger databasePinger, timeout time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+
+		if err := pinger.Ping(ctx); err != nil {
+			h.logError("readiness check", err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func (h *Handler) NotFound(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotFound, notFound())
+}
+
+func (h *Handler) MethodNotAllowed(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusMethodNotAllowed, errorResponse(
+		api.ErrorResponseCodeValidationError,
+		"Метод не поддерживается",
+	))
+}
+
+type requestResult struct {
+	panicValue any
+	stack      []byte
+}
+
+type bufferedResponseWriter struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func newBufferedResponseWriter() *bufferedResponseWriter {
+	return &bufferedResponseWriter{header: make(http.Header)}
+}
+
+func (w *bufferedResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *bufferedResponseWriter) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *bufferedResponseWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.body.Write(body)
+}
+
+func (w *bufferedResponseWriter) FlushTo(destination http.ResponseWriter) {
+	for name, values := range w.header {
+		destination.Header()[name] = append([]string(nil), values...)
+	}
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	destination.WriteHeader(status)
+	_, _ = destination.Write(w.body.Bytes())
 }
 
 func (h *Handler) authenticate(
@@ -167,7 +292,36 @@ func (h *Handler) validationErrorHandler(
 		status = http.StatusBadRequest
 	}
 
-	writeJSON(w, status, badRequest("Некорректные данные запроса"))
+	writeJSON(w, status, badRequestWithFields(
+		"Некорректные данные запроса",
+		validationFields(err),
+	))
+}
+
+func validationFields(err error) []api.FieldError {
+	fields := make([]api.FieldError, 0, 1)
+
+	var requestError *openapi3filter.RequestError
+	if errors.As(err, &requestError) && requestError.Parameter != nil {
+		fields = append(fields, api.FieldError{
+			Field:   requestError.Parameter.Name,
+			Message: "Некорректное значение параметра",
+		})
+		return fields
+	}
+
+	var schemaError *openapi3.SchemaError
+	if errors.As(err, &schemaError) {
+		pointer := schemaError.JSONPointer()
+		if len(pointer) > 0 {
+			fields = append(fields, api.FieldError{
+				Field:   strings.Join(pointer, "."),
+				Message: "Некорректное значение поля",
+			})
+		}
+	}
+
+	return fields
 }
 
 func requestTooLarge(err error) bool {
