@@ -37,6 +37,30 @@ func TestOrderScenarios(t *testing.T) {
 	client.waitForKitchen(t)
 	establishment, dish := client.demoMenu(t)
 
+	t.Run("service boundary", func(t *testing.T) {
+		var health map[string]string
+		client.request(t, http.MethodGet, "/healthz", nil, nil, http.StatusOK, &health)
+		if health["status"] != "ok" {
+			t.Fatalf("health response = %+v", health)
+		}
+
+		var routeError api.ErrorResponse
+		client.request(t, http.MethodGet, "/unknown", nil, nil, http.StatusNotFound, &routeError)
+		if routeError.Code != api.ErrorResponseCodeNotFound {
+			t.Fatalf("unknown route response = %+v", routeError)
+		}
+
+		client.request(
+			t,
+			http.MethodPut,
+			"/api/v1/establishments",
+			nil,
+			nil,
+			http.StatusMethodNotAllowed,
+			nil,
+		)
+	})
+
 	t.Run("price conflict", func(t *testing.T) {
 		request := newOrderRequest(establishment.ID, dish, 1)
 		request.OrderItems[0].ExpectedUnitPriceMinor++
@@ -277,6 +301,55 @@ func TestOrderScenarios(t *testing.T) {
 			nil,
 		)
 	})
+
+	t.Run("partner cursor pagination", func(t *testing.T) {
+		wanted := make(map[int64]struct{}, 3)
+		for index := range 3 {
+			request := newOrderRequest(establishment.ID, dish, 1)
+			request.CustomerName = fmt.Sprintf("E2E pagination %d-%d", time.Now().UnixNano(), index)
+			client.createOrder(t, request)
+			orderID := client.findPendingOrder(t, request.CustomerName)
+			wanted[orderID] = struct{}{}
+			client.updateStatusBody(t, orderID, map[string]string{
+				"status":           "rejected",
+				"rejection_reason": "overloaded",
+			}, http.StatusOK)
+		}
+
+		seen := make(map[int64]struct{}, len(wanted))
+		var cursor *string
+		for page := 0; page < 100; page++ {
+			path := "/api/v1/partner/orders?status=rejected&limit=2"
+			if cursor != nil {
+				path += "&cursor=" + url.QueryEscape(*cursor)
+			}
+
+			var response api.PartnerOrderListResponse
+			client.request(t, http.MethodGet, path, nil, client.partnerHeaders(), http.StatusOK, &response)
+			for _, order := range response.Orders {
+				if _, ok := wanted[order.ID]; ok {
+					seen[order.ID] = struct{}{}
+				}
+			}
+			cursor = response.NextCursor
+			if cursor == nil {
+				break
+			}
+		}
+		if len(seen) != len(wanted) {
+			t.Fatalf("paginated rejected orders found %d of %d", len(seen), len(wanted))
+		}
+
+		client.request(
+			t,
+			http.MethodGet,
+			"/api/v1/partner/orders?status=rejected&cursor=invalid",
+			nil,
+			client.partnerHeaders(),
+			http.StatusBadRequest,
+			nil,
+		)
+	})
 }
 
 func durationFromEnv(t *testing.T, name string, fallback time.Duration) time.Duration {
@@ -313,7 +386,7 @@ func newTestClient() *testClient {
 func (c *testClient) waitForKitchen(t *testing.T) {
 	t.Helper()
 
-	endpoint := c.baseURL + "/api/v1/establishments?limit=1"
+	endpoint := c.baseURL + "/readyz"
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, endpoint, http.NoBody)
