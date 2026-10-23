@@ -30,3 +30,11 @@ test-e2e:
 	KITCHEN_E2E_URL="http://$$kitchen_address" \
 	E2E_CONFIRMATION_WAIT=20s \
 	go test -v ./tests/e2e -count=1
+
+.PHONY: test-postgres check-generated
+
+test-postgres:
+	bash scripts/test-postgres.sh
+
+check-generated:
+	bash scripts/check-generated.sh

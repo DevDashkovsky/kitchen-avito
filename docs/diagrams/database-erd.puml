@@ -51,6 +51,7 @@ entity "orders" as orders {
   --
   * establishment_id : BIGINT <<FK>>
   * tracking_token_hash : BYTEA <<UQ>>
+  request_fingerprint : BYTEA
   * status : TEXT
   * customer_name : TEXT
   * customer_phone : TEXT

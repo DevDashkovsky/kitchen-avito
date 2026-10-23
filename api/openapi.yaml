@@ -82,6 +82,21 @@ paths:
       description: |
         Проверяет заведение, доступность блюд и ожидаемые цены, рассчитывает
         итоговую сумму и атомарно создаёт заказ вместе с позициями.
+        С Idempotency-Key повтор возвращает квитанцию первоначального создания,
+        даже если текущий статус изменился (его читайте через GET /orders/status).
+        Ключ — секрет доступа: 32 случайных байта в каноническом base64url без padding.
+        Клиент сохраняет его до отправки; он возвращается как tracking_token.
+        Без ключа каждый POST создаёт новый заказ. Ключ действует до удаления заказа.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Секретный ключ повтора; не включать в логи или URL. Повторённый заголовок запрещён.
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+            pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
       requestBody:
         required: true
         content:
@@ -89,6 +104,12 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateOrderRequest'
       responses:
+        '200':
+          description: Повтор — квитанция первоначального создания, не текущий статус заказа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedOrder'
         '201':
           description: Заказ создан
           content:
@@ -102,7 +123,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Заведение или состав заказа изменились
+          description: Заведение/меню изменились или ключ повтора занят другим запросом
           content:
             application/json:
               schema:
@@ -834,7 +855,7 @@ components:
         tracking_token:
           type: string
           minLength: 32
-          description: Случайный секрет, исходное значение которого не хранится
+          description: Случайный секрет, исходное значение которого не хранится в БД; при Idempotency-Key совпадает с ним
         status:
           type: string
           enum:
@@ -1249,6 +1270,7 @@ components:
           type: string
           enum:
             - order_conflict
+            - idempotency_key_reused
         message:
           type: string
         conflicts:

@@ -76,20 +76,21 @@ func (r RejectionReason) IsValid() bool {
 }
 
 type Order struct {
-	ID                int64
-	EstablishmentID   int64
-	TrackingTokenHash []byte
-	Status            OrderStatus
-	CustomerName      string
-	CustomerPhone     string
-	DeliveryAddress   string
-	Comment           *string
-	TotalMinor        int64
-	RejectionReason   *RejectionReason
-	RejectionComment  *string
-	Items             []OrderItem
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                 int64
+	EstablishmentID    int64
+	TrackingTokenHash  []byte
+	RequestFingerprint []byte
+	Status             OrderStatus
+	CustomerName       string
+	CustomerPhone      string
+	DeliveryAddress    string
+	Comment            *string
+	TotalMinor         int64
+	RejectionReason    *RejectionReason
+	RejectionComment   *string
+	Items              []OrderItem
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type OrderItem struct {

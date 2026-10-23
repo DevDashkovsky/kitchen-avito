@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
@@ -10,12 +11,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"kitchen-api/internal/kitchen/domain"
+	"kitchen-api/internal/kitchen/service"
 )
 
 const orderColumns = `
     id,
     establishment_id,
     tracking_token_hash,
+    request_fingerprint,
     status,
     customer_name,
     customer_phone,
@@ -27,11 +30,7 @@ const orderColumns = `
     created_at,
     updated_at`
 
-func (r *Repository) GetOrderDishes(
-	ctx context.Context,
-	establishmentID int64,
-	dishIDs []int64,
-) ([]domain.Dish, error) {
+func getOrderDishes(ctx context.Context, db menuQueryer, establishmentID int64, dishIDs []int64) ([]domain.Dish, error) {
 	if len(dishIDs) == 0 {
 		return []domain.Dish{}, nil
 	}
@@ -52,7 +51,7 @@ WHERE c.establishment_id = $1
   AND d.id = ANY($2)
 ORDER BY d.id`
 
-	rows, err := r.pool.Query(ctx, query, establishmentID, dishIDs)
+	rows, err := db.Query(ctx, query, establishmentID, dishIDs)
 	if err != nil {
 		return nil, fmt.Errorf("get order dishes: %w", err)
 	}
@@ -75,21 +74,62 @@ ORDER BY d.id`
 	return dishes, nil
 }
 
-func (r *Repository) CreateOrder(ctx context.Context, order domain.Order) (domain.Order, error) {
-	if len(order.Items) == 0 {
-		return domain.Order{}, fmt.Errorf("create order: %w", domain.ErrInvalidInput)
-	}
-
-	tx, err := r.pool.Begin(ctx)
+func (r *Repository) WithinOrderCreation(ctx context.Context, fn func(service.OrderCreationTx) error) error {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return domain.Order{}, fmt.Errorf("begin create order transaction: %w", err)
+		return fmt.Errorf("begin order creation: %w", err)
 	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(&orderCreationTx{tx: tx}); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit order creation: %w", err)
+	}
+	return nil
+}
 
+type orderCreationTx struct{ tx pgx.Tx }
+
+func (t *orderCreationTx) LockKey(ctx context.Context, hash []byte) error {
+	if len(hash) != 32 {
+		return domain.ErrInvalidInput
+	}
+	// Collisions only serialize unrelated requests; lookup uses the full hash.
+	key := int64(binary.BigEndian.Uint64(hash[:8]))
+	if _, err := t.tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
+		return fmt.Errorf("lock order key: %w", err)
+	}
+	return nil
+}
+
+func (t *orderCreationTx) FindByTokenHash(ctx context.Context, hash []byte) (domain.Order, error) {
+	order, err := scanOrder(t.tx.QueryRow(ctx, "SELECT "+orderColumns+" FROM orders WHERE tracking_token_hash = $1", hash))
+	if err != nil {
+		return domain.Order{}, orderNotFoundError("find order replay", err)
+	}
+	return order, nil
+}
+
+func (t *orderCreationTx) GetEstablishment(ctx context.Context, id int64) (domain.Establishment, error) {
+	establishment, err := scanEstablishment(t.tx.QueryRow(ctx, "SELECT "+establishmentColumns+" FROM establishments WHERE id = $1", id))
+	if err != nil {
+		return domain.Establishment{}, establishmentError("get creation establishment", err)
+	}
+	return establishment, nil
+}
+
+func (t *orderCreationTx) GetOrderDishes(ctx context.Context, establishmentID int64, ids []int64) ([]domain.Dish, error) {
+	return getOrderDishes(ctx, t.tx, establishmentID, ids)
+}
+
+func (t *orderCreationTx) CreateOrder(ctx context.Context, order domain.Order) (domain.Order, error) {
+	tx := t.tx
+	if len(order.Items) == 0 {
+		return domain.Order{}, domain.ErrInvalidInput
+	}
 	var acceptsOrders bool
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
         SELECT accepts_orders
         FROM establishments
         WHERE id = $1
@@ -112,6 +152,7 @@ func (r *Repository) CreateOrder(ctx context.Context, order domain.Order) (domai
 INSERT INTO orders (
     establishment_id,
     tracking_token_hash,
+    request_fingerprint,
     status,
     customer_name,
     customer_phone,
@@ -119,7 +160,7 @@ INSERT INTO orders (
     comment,
     total_minor
 )
-VALUES ($1, $2, 'pending_confirmation', $3, $4, $5, $6, $7)
+VALUES ($1, $2, $8, 'pending_confirmation', $3, $4, $5, $6, $7)
 RETURNING ` + orderColumns
 
 	created, err := scanOrder(tx.QueryRow(
@@ -132,6 +173,7 @@ RETURNING ` + orderColumns
 		order.DeliveryAddress,
 		order.Comment,
 		order.TotalMinor,
+		order.RequestFingerprint,
 	))
 	if err != nil {
 		return domain.Order{}, fmt.Errorf("insert order: %w", err)
@@ -163,10 +205,6 @@ RETURNING ` + orderColumns
 		item.ID = itemID
 		item.OrderID = created.ID
 		created.Items[index] = item
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return domain.Order{}, fmt.Errorf("commit create order transaction: %w", err)
 	}
 
 	return created, nil
@@ -523,6 +561,7 @@ func scanOrder(row rowScanner) (domain.Order, error) {
 		&order.ID,
 		&order.EstablishmentID,
 		&order.TrackingTokenHash,
+		&order.RequestFingerprint,
 		&status,
 		&order.CustomerName,
 		&order.CustomerPhone,
