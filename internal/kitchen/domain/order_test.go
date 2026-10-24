@@ -5,28 +5,25 @@ import "testing"
 func TestOrderStatusCanTransitionTo(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		current OrderStatus
-		next    OrderStatus
-		want    bool
-	}{
-		{OrderStatusPendingConfirmation, OrderStatusConfirmed, true},
-		{OrderStatusPendingConfirmation, OrderStatusRejected, true},
-		{OrderStatusPendingConfirmation, OrderStatusCancelled, true},
-		{OrderStatusConfirmed, OrderStatusPreparing, true},
-		{OrderStatusPreparing, OrderStatusReadyForDelivery, true},
-		{OrderStatusReadyForDelivery, OrderStatusDelivering, true},
-		{OrderStatusDelivering, OrderStatusCompleted, true},
-		{OrderStatusPendingConfirmation, OrderStatusPreparing, false},
-		{OrderStatusConfirmed, OrderStatusCompleted, false},
-		{OrderStatusCompleted, OrderStatusPreparing, false},
-		{OrderStatusRejected, OrderStatusConfirmed, false},
-		{OrderStatusCancelled, OrderStatusConfirmed, false},
+	statuses := []OrderStatus{OrderStatusPendingConfirmation, OrderStatusConfirmed,
+		OrderStatusPreparing, OrderStatusReadyForDelivery, OrderStatusDelivering,
+		OrderStatusCompleted, OrderStatusRejected, OrderStatusCancelled, "invalid"}
+	allowed := map[OrderStatus][]OrderStatus{
+		OrderStatusPendingConfirmation: {OrderStatusConfirmed, OrderStatusRejected, OrderStatusCancelled},
+		OrderStatusConfirmed:           {OrderStatusPreparing, OrderStatusRejected},
+		OrderStatusPreparing:           {OrderStatusReadyForDelivery, OrderStatusRejected},
+		OrderStatusReadyForDelivery:    {OrderStatusDelivering, OrderStatusRejected},
+		OrderStatusDelivering:          {OrderStatusCompleted},
 	}
-
-	for _, test := range tests {
-		if got := test.current.CanTransitionTo(test.next); got != test.want {
-			t.Errorf("CanTransitionTo(%q, %q) = %t, want %t", test.current, test.next, got, test.want)
+	for _, current := range statuses {
+		for _, next := range statuses {
+			want := false
+			for _, target := range allowed[current] {
+				want = want || next == target
+			}
+			if got := current.CanTransitionTo(next); got != want {
+				t.Errorf("CanTransitionTo(%q, %q) = %t, want %t", current, next, got, want)
+			}
 		}
 	}
 }

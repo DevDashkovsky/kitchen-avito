@@ -40,6 +40,7 @@ type orderFixture struct {
 	spec            *openapi3.T
 	body            api.CreateOrderRequest
 	venueID, dishID int64
+	partnerKey      string
 	logs            *lockedBuffer
 }
 
@@ -73,6 +74,7 @@ func newOrderFixture(t *testing.T) *orderFixture {
 	t.Helper()
 	f := &orderFixture{pool: integrationPool(t, "TEST_DATABASE_URL"), logs: &lockedBuffer{}}
 	token := newTestKey()
+	f.partnerKey = token
 	hash := sha256.Sum256([]byte(token))
 	err := f.pool.QueryRow(t.Context(), `INSERT INTO establishments(name,accepts_orders,api_key_hash) VALUES('Integration',true,$1) RETURNING id`, hash[:]).Scan(&f.venueID)
 	if err != nil {

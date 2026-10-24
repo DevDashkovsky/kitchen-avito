@@ -40,11 +40,11 @@ func (s OrderStatus) CanTransitionTo(next OrderStatus) bool {
 	case OrderStatusPendingConfirmation:
 		return next == OrderStatusConfirmed || next == OrderStatusRejected || next == OrderStatusCancelled
 	case OrderStatusConfirmed:
-		return next == OrderStatusPreparing
+		return next == OrderStatusPreparing || next == OrderStatusRejected
 	case OrderStatusPreparing:
-		return next == OrderStatusReadyForDelivery
+		return next == OrderStatusReadyForDelivery || next == OrderStatusRejected
 	case OrderStatusReadyForDelivery:
-		return next == OrderStatusDelivering
+		return next == OrderStatusDelivering || next == OrderStatusRejected
 	case OrderStatusDelivering:
 		return next == OrderStatusCompleted
 	default:
