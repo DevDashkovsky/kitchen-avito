@@ -281,6 +281,7 @@ make lint
 make test-e2e
 make test-postgres  # локальный PostgreSQL, без Docker
 make check-generated
+make check-ci
 ```
 
 `make test-e2e` поднимает отдельное временное Compose-окружение без worker-а заведения, проверяет реальные HTTP-сценарии и удаляет только свои контейнеры и volume.
@@ -299,8 +300,53 @@ Docker Compose при этом не проверяется — для него �
 Для повторной генерации серверных типов и клиента:
 
 ```bash
-go generate ./...
+GOTOOLCHAIN="go$(cat .go-version)" go generate ./...
 ```
+
+Генерируйте файлы версией Go из `.go-version`.
+Сжатое представление встроенной OpenAPI может отличаться между версиями Go,
+даже если исходная спецификация не менялась.
+
+### GitHub Actions
+
+[CI](.github/workflows/ci.yml) запускается на `push`, `pull_request` и вручную
+через `workflow_dispatch`. Три задания выполняются независимо на Ubuntu 24.04:
+
+| Задание | Проверки | Локальное повторение |
+| --- | --- | --- |
+| Go checks | Workflow, генерация, race tests, сборка и линтер с integration build tag | `make check-ci check-generated test-race lint` и `go build ./...` |
+| PostgreSQL integration | SQL/HTTP, upgrade/rollback и повтор запросов после перезапуска API | `make test-postgres` |
+| Docker E2E | Конфигурация Compose, сборка образа worker, HTTP-сценарии в контейнерах без worker | `docker compose config --quiet`, `docker compose build establishment`, `make test-e2e COMPOSE="docker compose"` |
+
+Версия инструментов Go закреплена в [.go-version](.go-version) — 1.25.12;
+`go.mod` сохраняет минимальную версию языка 1.25.0. Goose v3.27.2 требует
+не ниже 1.25.7. `GOTOOLCHAIN=local` в CI запрещает неявную смену toolchain.
+Для локального повторения задайте `export GOTOOLCHAIN="go$(cat .go-version)"`
+перед командами проверок и генерации. Линтер закреплён на v2.13.2,
+`make check-ci` запускает actionlint v1.7.12 через `go run` без изменения
+зависимостей приложения. Необязательные проверки shellcheck/pyflakes отключены
+в этой команде, чтобы результат не зависел от их установки на машине.
+Первый запуск требует сети для скачивания инструментов.
+
+В PostgreSQL job устанавливается PostgreSQL 16, его серверные утилиты добавляются
+в PATH. Временный кластер создаётся от обычного пользователя. При ошибке
+PostgreSQL/API или Compose тестов последние строки логов выводятся до очистки
+ресурсов; исходный код ошибки сохраняется. При принудительном завершении runner
+диагностика и cleanup не гарантируются.
+
+Actions закреплены полными commit SHA официальных релизов
+[checkout](https://github.com/actions/checkout/releases/tag/v7.0.1),
+[setup-go](https://github.com/actions/setup-go/releases/tag/v7.0.0) и
+[golangci-lint-action](https://github.com/golangci/golangci-lint-action/releases/tag/v9.3.0).
+Workflow использует только `contents: read`, не сохраняет checkout credentials,
+не требует секретов и не публикует образы. Новый запуск отменяет предыдущий
+для того же события и ref; задания ограничены 20–25 минутами.
+
+Для запуска в GitHub нужно отправить ветку в репозиторий с включёнными Actions.
+Само наличие workflow не подтверждает успешный hosted run. Локальный
+`make test-postgres` также не подтверждает Docker-сборку: для неё нужен доступный
+Docker daemon и отдельный `make test-e2e`. Статус required checks/защиту веток
+нужно настраивать в GitHub отдельно.
 
 ## Упрощения MVP
 

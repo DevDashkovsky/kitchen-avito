@@ -8,14 +8,25 @@ done
 task_tmp=$(mktemp -d /tmp/kitchen-pg.XXXXXX)
 api_pid=''
 cleanup() {
+  status=$?
+  trap - EXIT
+  if [ "$status" -ne 0 ]; then
+    for log in init postgres api; do
+      if [ -f "$task_tmp/$log.log" ]; then
+        echo "--- $log.log (last 100 lines) ---" >&2
+        tail -n 100 "$task_tmp/$log.log" >&2 || true
+      fi
+    done
+  fi
   if [ -n "$api_pid" ]; then kill "$api_pid" 2>/dev/null || true; wait "$api_pid" 2>/dev/null || true; fi
   pg_ctl -D "$task_tmp/data" -m immediate -w stop >/dev/null 2>&1 || true
   rm -rf "$task_tmp"
+  exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-initdb -D "$task_tmp/data" -U kitchen -A trust --locale-provider=icu --icu-locale=und -E UTF8 >"$task_tmp/init.log"
+initdb -D "$task_tmp/data" -U kitchen -A trust --locale-provider=icu --icu-locale=und -E UTF8 >"$task_tmp/init.log" 2>&1
 pg_ctl -D "$task_tmp/data" -l "$task_tmp/postgres.log" -o "-h '' -k $task_tmp" -w start >/dev/null
 createdb -h "$task_tmp" -U kitchen kitchen_test
 createdb -h "$task_tmp" -U kitchen kitchen_upgrade
