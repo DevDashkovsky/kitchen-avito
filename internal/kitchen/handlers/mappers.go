@@ -29,6 +29,7 @@ func categoryToAPI(category domain.Category) api.Category {
 
 func dishToAPI(dish domain.Dish) api.Dish {
 	return api.Dish{
+		ExternalID:  dish.ExternalID,
 		ID:          dish.ID,
 		CategoryID:  dish.CategoryID,
 		Name:        dish.Name,

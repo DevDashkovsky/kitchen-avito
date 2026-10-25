@@ -156,6 +156,7 @@ func (h *Handler) CreateDish(
 
 	dish, err := h.menu.CreateDish(ctx, establishmentID, service.NewDish{
 		CategoryID:  request.Body.CategoryID,
+		ExternalID:  request.Body.ExternalID,
 		Name:        request.Body.Name,
 		Description: description,
 		PriceMinor:  request.Body.PriceMinor,
@@ -168,6 +169,9 @@ func (h *Handler) CreateDish(
 	}
 	if errors.Is(err, domain.ErrNotFound) {
 		return api.CreateDish404JSONResponse{NotFoundJSONResponse: notFound()}, nil
+	}
+	if errors.Is(err, domain.ErrExternalIDConflict) {
+		return api.CreateDish409JSONResponse{ConflictJSONResponse: conflict(api.ErrorResponseCodeExternalIDConflict, "Внешний ID уже занят")}, nil
 	}
 	if err != nil {
 		h.logError("create dish", err)

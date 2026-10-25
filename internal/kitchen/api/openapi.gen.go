@@ -74,6 +74,8 @@ func (e DishConflictReason) Valid() bool {
 const (
 	ErrorResponseCodeCancellationNotAllowed  ErrorResponseCode = "cancellation_not_allowed"
 	ErrorResponseCodeDuplicateCategory       ErrorResponseCode = "duplicate_category"
+	ErrorResponseCodeExternalIDAlreadyBound  ErrorResponseCode = "external_id_already_bound"
+	ErrorResponseCodeExternalIDConflict      ErrorResponseCode = "external_id_conflict"
 	ErrorResponseCodeInternalError           ErrorResponseCode = "internal_error"
 	ErrorResponseCodeInvalidStatusTransition ErrorResponseCode = "invalid_status_transition"
 	ErrorResponseCodeNotFound                ErrorResponseCode = "not_found"
@@ -88,6 +90,10 @@ func (e ErrorResponseCode) Valid() bool {
 	case ErrorResponseCodeCancellationNotAllowed:
 		return true
 	case ErrorResponseCodeDuplicateCategory:
+		return true
+	case ErrorResponseCodeExternalIDAlreadyBound:
+		return true
+	case ErrorResponseCodeExternalIDConflict:
 		return true
 	case ErrorResponseCodeInternalError:
 		return true
@@ -135,12 +141,15 @@ func (e NullableRejectionReason) Valid() bool {
 
 // Defines values for OrderConflictResponseCode.
 const (
-	OrderConflictResponseCodeOrderConflict OrderConflictResponseCode = "order_conflict"
+	OrderConflictResponseCodeIdempotencyKeyReused OrderConflictResponseCode = "idempotency_key_reused"
+	OrderConflictResponseCodeOrderConflict        OrderConflictResponseCode = "order_conflict"
 )
 
 // Valid indicates whether the value is a known member of the OrderConflictResponseCode enum.
 func (e OrderConflictResponseCode) Valid() bool {
 	switch e {
+	case OrderConflictResponseCodeIdempotencyKeyReused:
+		return true
 	case OrderConflictResponseCodeOrderConflict:
 		return true
 	default:
@@ -253,6 +262,12 @@ func (e ValidationErrorResponseCode) Valid() bool {
 	}
 }
 
+// BindDishExternalIDRequest defines model for BindDishExternalIDRequest.
+type BindDishExternalIDRequest struct {
+	// ExternalID Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+	ExternalID ExternalDishID `json:"external_id"`
+}
+
 // CancelledOrder defines model for CancelledOrder.
 type CancelledOrder struct {
 	Status    CancelledOrderStatus `json:"status"`
@@ -277,9 +292,12 @@ type CategoryWriteRequest struct {
 type CreateDishRequest struct {
 	CategoryID  int64   `json:"category_id"`
 	Description *string `json:"description,omitempty"`
-	IsAvailable *bool   `json:"is_available,omitempty"`
-	Name        string  `json:"name"`
-	PriceMinor  int64   `json:"price_minor"`
+
+	// ExternalID Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+	ExternalID  *ExternalDishID `json:"external_id,omitempty"`
+	IsAvailable *bool           `json:"is_available,omitempty"`
+	Name        string          `json:"name"`
+	PriceMinor  int64           `json:"price_minor"`
 }
 
 // CreateOrderItemRequest defines model for CreateOrderItemRequest.
@@ -309,7 +327,7 @@ type CreatedOrder struct {
 	// TotalMinor Итоговая сумма заказа в копейках
 	TotalMinor int64 `json:"total_minor"`
 
-	// TrackingToken Случайный секрет, исходное значение которого не хранится
+	// TrackingToken Случайный секрет, исходное значение которого не хранится в БД; при Idempotency-Key совпадает с ним
 	TrackingToken string `json:"tracking_token"`
 }
 
@@ -320,9 +338,12 @@ type CreatedOrderStatus string
 type Dish struct {
 	CategoryID  int64  `json:"category_id"`
 	Description string `json:"description"`
-	ID          int64  `json:"id"`
-	IsAvailable bool   `json:"is_available"`
-	Name        string `json:"name"`
+
+	// ExternalID Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+	ExternalID  *ExternalDishID `json:"external_id,omitempty"`
+	ID          int64           `json:"id"`
+	IsAvailable bool            `json:"is_available"`
+	Name        string          `json:"name"`
 
 	// PriceMinor Цена в копейках
 	PriceMinor int64 `json:"price_minor"`
@@ -367,6 +388,9 @@ type EstablishmentSummary struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
 }
+
+// ExternalDishID Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+type ExternalDishID = string
 
 // FieldError defines model for FieldError.
 type FieldError struct {
@@ -480,7 +504,8 @@ type UpdateEstablishmentRequest struct {
 }
 
 // UpdateOrderStatusRequest rejection_reason обязателен только для статуса rejected.
-// Для причины other обязателен rejection_comment.
+// Для причины other обязателен непустой после удаления краевых пробелов rejection_comment.
+// Повтор rejected не изменяет ранее сохранённую причину или комментарий.
 type UpdateOrderStatusRequest struct {
 	RejectionComment *string                        `json:"rejection_comment,omitempty"`
 	RejectionReason  *PartnerRejectionReason        `json:"rejection_reason,omitempty"`
@@ -566,6 +591,18 @@ type ListEstablishmentsParams struct {
 	Offset *Offset `form:"offset,omitempty" json:"offset,omitempty"`
 }
 
+// CreateOrderParams defines parameters for CreateOrder.
+type CreateOrderParams struct {
+	// IdempotencyKey Секретный ключ повтора; не включать в логи или URL. Повторённый заголовок запрещён.
+	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
+}
+
+// GetPartnerDishByExternalIDParams defines parameters for GetPartnerDishByExternalID.
+type GetPartnerDishByExternalIDParams struct {
+	// ExternalID Ровно одно значение; повтор параметра запрещён
+	ExternalID ExternalDishID `form:"external_id" json:"external_id"`
+}
+
 // ListPartnerOrdersParams defines parameters for ListPartnerOrders.
 type ListPartnerOrdersParams struct {
 	// Status Один статус для фильтрации заказов
@@ -593,6 +630,9 @@ type CreateDishJSONRequestBody = CreateDishRequest
 // UpdateDishJSONRequestBody defines body for UpdateDish for application/json ContentType.
 type UpdateDishJSONRequestBody = UpdateDishRequest
 
+// BindDishExternalIDJSONRequestBody defines body for BindDishExternalID for application/json ContentType.
+type BindDishExternalIDJSONRequestBody = BindDishExternalIDRequest
+
 // UpdateEstablishmentJSONRequestBody defines body for UpdateEstablishment for application/json ContentType.
 type UpdateEstablishmentJSONRequestBody = UpdateEstablishmentRequest
 
@@ -609,7 +649,7 @@ type ServerInterface interface {
 	GetEstablishmentMenu(w http.ResponseWriter, r *http.Request, establishmentID EstablishmentID)
 	// CreateOrder Создать заказ
 	// (POST /api/v1/orders)
-	CreateOrder(w http.ResponseWriter, r *http.Request)
+	CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams)
 	// CancelOrder Отменить заказ
 	// (POST /api/v1/orders/cancel)
 	CancelOrder(w http.ResponseWriter, r *http.Request)
@@ -625,9 +665,18 @@ type ServerInterface interface {
 	// CreateDish Создать блюдо
 	// (POST /api/v1/partner/dishes)
 	CreateDish(w http.ResponseWriter, r *http.Request)
+	// GetPartnerDishByExternalID Найти блюдо по внешнему ID
+	// (GET /api/v1/partner/dishes/by-external-id)
+	GetPartnerDishByExternalID(w http.ResponseWriter, r *http.Request, params GetPartnerDishByExternalIDParams)
+	// GetPartnerDish Получить своё блюдо
+	// (GET /api/v1/partner/dishes/{dishId})
+	GetPartnerDish(w http.ResponseWriter, r *http.Request, dishID DishID)
 	// UpdateDish Изменить блюдо
 	// (PATCH /api/v1/partner/dishes/{dishId})
 	UpdateDish(w http.ResponseWriter, r *http.Request, dishID DishID)
+	// BindDishExternalID Однократно привязать ID каталога к блюду
+	// (PUT /api/v1/partner/dishes/{dishId}/external-id)
+	BindDishExternalID(w http.ResponseWriter, r *http.Request, dishID DishID)
 	// UpdateEstablishment Изменить приём заказов
 	// (PATCH /api/v1/partner/establishment)
 	UpdateEstablishment(w http.ResponseWriter, r *http.Request)
@@ -663,7 +712,7 @@ func (_ Unimplemented) GetEstablishmentMenu(w http.ResponseWriter, r *http.Reque
 
 // CreateOrder Создать заказ
 // (POST /api/v1/orders)
-func (_ Unimplemented) CreateOrder(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -697,9 +746,27 @@ func (_ Unimplemented) CreateDish(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// GetPartnerDishByExternalID Найти блюдо по внешнему ID
+// (GET /api/v1/partner/dishes/by-external-id)
+func (_ Unimplemented) GetPartnerDishByExternalID(w http.ResponseWriter, r *http.Request, params GetPartnerDishByExternalIDParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetPartnerDish Получить своё блюдо
+// (GET /api/v1/partner/dishes/{dishId})
+func (_ Unimplemented) GetPartnerDish(w http.ResponseWriter, r *http.Request, dishID DishID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // UpdateDish Изменить блюдо
 // (PATCH /api/v1/partner/dishes/{dishId})
 func (_ Unimplemented) UpdateDish(w http.ResponseWriter, r *http.Request, dishID DishID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// BindDishExternalID Однократно привязать ID каталога к блюду
+// (PUT /api/v1/partner/dishes/{dishId}/external-id)
+func (_ Unimplemented) BindDishExternalID(w http.ResponseWriter, r *http.Request, dishID DishID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -830,8 +897,35 @@ func (siw *ServerInterfaceWrapper) GetEstablishmentMenu(w http.ResponseWriter, r
 // CreateOrder operation middleware
 func (siw *ServerInterfaceWrapper) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateOrderParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreateOrder(w, r)
+		siw.Handler.CreateOrder(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -923,6 +1017,65 @@ func (siw *ServerInterfaceWrapper) CreateDish(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// GetPartnerDishByExternalID operation middleware
+func (siw *ServerInterfaceWrapper) GetPartnerDishByExternalID(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetPartnerDishByExternalIDParams
+
+	// ------------- Required query parameter "external_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "external_id", r.URL.Query(), &params.ExternalID, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "external_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "external_id", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPartnerDishByExternalID(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetPartnerDish operation middleware
+func (siw *ServerInterfaceWrapper) GetPartnerDish(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "dishId" -------------
+	var dishID DishID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "dishId", chi.URLParam(r, "dishId"), &dishID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dishId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPartnerDish(w, r, dishID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UpdateDish operation middleware
 func (siw *ServerInterfaceWrapper) UpdateDish(w http.ResponseWriter, r *http.Request) {
 
@@ -940,6 +1093,32 @@ func (siw *ServerInterfaceWrapper) UpdateDish(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.UpdateDish(w, r, dishID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// BindDishExternalID operation middleware
+func (siw *ServerInterfaceWrapper) BindDishExternalID(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "dishId" -------------
+	var dishID DishID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "dishId", chi.URLParam(r, "dishId"), &dishID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "dishId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.BindDishExternalID(w, r, dishID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1229,7 +1408,16 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/api/v1/partner/dishes", wrapper.CreateDish)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/partner/dishes/by-external-id", wrapper.GetPartnerDishByExternalID)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v1/partner/dishes/{dishId}", wrapper.GetPartnerDish)
+	})
+	r.Group(func(r chi.Router) {
 		r.Patch(options.BaseURL+"/api/v1/partner/dishes/{dishId}", wrapper.UpdateDish)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/v1/partner/dishes/{dishId}/external-id", wrapper.BindDishExternalID)
 	})
 	r.Group(func(r chi.Router) {
 		r.Patch(options.BaseURL+"/api/v1/partner/establishment", wrapper.UpdateEstablishment)
@@ -1360,11 +1548,26 @@ func (response GetEstablishmentMenu500JSONResponse) VisitGetEstablishmentMenuRes
 }
 
 type CreateOrderRequestObject struct {
-	Body *CreateOrderJSONRequestBody
+	Params CreateOrderParams
+	Body   *CreateOrderJSONRequestBody
 }
 
 type CreateOrderResponseObject interface {
 	VisitCreateOrderResponse(w http.ResponseWriter) error
+}
+
+type CreateOrder200JSONResponse CreatedOrder
+
+func (response CreateOrder200JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type CreateOrder201JSONResponse CreatedOrder
@@ -1826,6 +2029,20 @@ func (response CreateDish404JSONResponse) VisitCreateDishResponse(w http.Respons
 	return err
 }
 
+type CreateDish409JSONResponse struct{ ConflictJSONResponse }
+
+func (response CreateDish409JSONResponse) VisitCreateDishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateDish413JSONResponse struct{ PayloadTooLargeJSONResponse }
 
 func (response CreateDish413JSONResponse) VisitCreateDishResponse(w http.ResponseWriter) error {
@@ -1843,6 +2060,162 @@ func (response CreateDish413JSONResponse) VisitCreateDishResponse(w http.Respons
 type CreateDish500JSONResponse struct{ InternalErrorJSONResponse }
 
 func (response CreateDish500JSONResponse) VisitCreateDishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDishByExternalIDRequestObject struct {
+	Params GetPartnerDishByExternalIDParams
+}
+
+type GetPartnerDishByExternalIDResponseObject interface {
+	VisitGetPartnerDishByExternalIDResponse(w http.ResponseWriter) error
+}
+
+type GetPartnerDishByExternalID200JSONResponse Dish
+
+func (response GetPartnerDishByExternalID200JSONResponse) VisitGetPartnerDishByExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDishByExternalID400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetPartnerDishByExternalID400JSONResponse) VisitGetPartnerDishByExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDishByExternalID401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetPartnerDishByExternalID401JSONResponse) VisitGetPartnerDishByExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDishByExternalID404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetPartnerDishByExternalID404JSONResponse) VisitGetPartnerDishByExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDishByExternalID500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response GetPartnerDishByExternalID500JSONResponse) VisitGetPartnerDishByExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDishRequestObject struct {
+	DishID DishID `json:"dishId"`
+}
+
+type GetPartnerDishResponseObject interface {
+	VisitGetPartnerDishResponse(w http.ResponseWriter) error
+}
+
+type GetPartnerDish200JSONResponse Dish
+
+func (response GetPartnerDish200JSONResponse) VisitGetPartnerDishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDish400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetPartnerDish400JSONResponse) VisitGetPartnerDishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDish401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetPartnerDish401JSONResponse) VisitGetPartnerDishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDish404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetPartnerDish404JSONResponse) VisitGetPartnerDishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetPartnerDish500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response GetPartnerDish500JSONResponse) VisitGetPartnerDishResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -1936,6 +2309,113 @@ func (response UpdateDish413JSONResponse) VisitUpdateDishResponse(w http.Respons
 type UpdateDish500JSONResponse struct{ InternalErrorJSONResponse }
 
 func (response UpdateDish500JSONResponse) VisitUpdateDishResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BindDishExternalIDRequestObject struct {
+	DishID DishID `json:"dishId"`
+	Body   *BindDishExternalIDJSONRequestBody
+}
+
+type BindDishExternalIDResponseObject interface {
+	VisitBindDishExternalIDResponse(w http.ResponseWriter) error
+}
+
+type BindDishExternalID200JSONResponse Dish
+
+func (response BindDishExternalID200JSONResponse) VisitBindDishExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BindDishExternalID400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response BindDishExternalID400JSONResponse) VisitBindDishExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BindDishExternalID401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response BindDishExternalID401JSONResponse) VisitBindDishExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BindDishExternalID404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response BindDishExternalID404JSONResponse) VisitBindDishExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BindDishExternalID409JSONResponse struct{ ConflictJSONResponse }
+
+func (response BindDishExternalID409JSONResponse) VisitBindDishExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BindDishExternalID413JSONResponse struct{ PayloadTooLargeJSONResponse }
+
+func (response BindDishExternalID413JSONResponse) VisitBindDishExternalIDResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type BindDishExternalID500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response BindDishExternalID500JSONResponse) VisitBindDishExternalIDResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -2335,9 +2815,18 @@ type StrictServerInterface interface {
 	// CreateDish Создать блюдо
 	// (POST /api/v1/partner/dishes)
 	CreateDish(ctx context.Context, request CreateDishRequestObject) (CreateDishResponseObject, error)
+	// GetPartnerDishByExternalID Найти блюдо по внешнему ID
+	// (GET /api/v1/partner/dishes/by-external-id)
+	GetPartnerDishByExternalID(ctx context.Context, request GetPartnerDishByExternalIDRequestObject) (GetPartnerDishByExternalIDResponseObject, error)
+	// GetPartnerDish Получить своё блюдо
+	// (GET /api/v1/partner/dishes/{dishId})
+	GetPartnerDish(ctx context.Context, request GetPartnerDishRequestObject) (GetPartnerDishResponseObject, error)
 	// UpdateDish Изменить блюдо
 	// (PATCH /api/v1/partner/dishes/{dishId})
 	UpdateDish(ctx context.Context, request UpdateDishRequestObject) (UpdateDishResponseObject, error)
+	// BindDishExternalID Однократно привязать ID каталога к блюду
+	// (PUT /api/v1/partner/dishes/{dishId}/external-id)
+	BindDishExternalID(ctx context.Context, request BindDishExternalIDRequestObject) (BindDishExternalIDResponseObject, error)
 	// UpdateEstablishment Изменить приём заказов
 	// (PATCH /api/v1/partner/establishment)
 	UpdateEstablishment(ctx context.Context, request UpdateEstablishmentRequestObject) (UpdateEstablishmentResponseObject, error)
@@ -2447,8 +2936,10 @@ func (sh *strictHandler) GetEstablishmentMenu(w http.ResponseWriter, r *http.Req
 }
 
 // CreateOrder operation middleware
-func (sh *strictHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams) {
 	var request CreateOrderRequestObject
+
+	request.Params = params
 
 	var body CreateOrderJSONRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -2620,6 +3111,58 @@ func (sh *strictHandler) CreateDish(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetPartnerDishByExternalID operation middleware
+func (sh *strictHandler) GetPartnerDishByExternalID(w http.ResponseWriter, r *http.Request, params GetPartnerDishByExternalIDParams) {
+	var request GetPartnerDishByExternalIDRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPartnerDishByExternalID(ctx, request.(GetPartnerDishByExternalIDRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPartnerDishByExternalID")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPartnerDishByExternalIDResponseObject); ok {
+		if err := validResponse.VisitGetPartnerDishByExternalIDResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetPartnerDish operation middleware
+func (sh *strictHandler) GetPartnerDish(w http.ResponseWriter, r *http.Request, dishID DishID) {
+	var request GetPartnerDishRequestObject
+
+	request.DishID = dishID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetPartnerDish(ctx, request.(GetPartnerDishRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetPartnerDish")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetPartnerDishResponseObject); ok {
+		if err := validResponse.VisitGetPartnerDishResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // UpdateDish operation middleware
 func (sh *strictHandler) UpdateDish(w http.ResponseWriter, r *http.Request, dishID DishID) {
 	var request UpdateDishRequestObject
@@ -2646,6 +3189,39 @@ func (sh *strictHandler) UpdateDish(w http.ResponseWriter, r *http.Request, dish
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(UpdateDishResponseObject); ok {
 		if err := validResponse.VisitUpdateDishResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// BindDishExternalID operation middleware
+func (sh *strictHandler) BindDishExternalID(w http.ResponseWriter, r *http.Request, dishID DishID) {
+	var request BindDishExternalIDRequestObject
+
+	request.DishID = dishID
+
+	var body BindDishExternalIDJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.BindDishExternalID(ctx, request.(BindDishExternalIDRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "BindDishExternalID")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(BindDishExternalIDResponseObject); ok {
+		if err := validResponse.VisitBindDishExternalIDResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -2798,83 +3374,111 @@ func (sh *strictHandler) UpdatePartnerOrderStatus(w http.ResponseWriter, r *http
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"df5/AA==",
+	"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",
+	"7vb/BgAA//8=",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

@@ -11,6 +11,7 @@ type Category struct {
 }
 
 type Dish struct {
+	ExternalID  *string
 	ID          int64
 	CategoryID  int64
 	Name        string

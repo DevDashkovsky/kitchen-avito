@@ -5,6 +5,8 @@ run:
   relative-path-mode: gomod
   modules-download-mode: readonly
   tests: true
+  build-tags:
+    - integration
 
 linters:
   default: standard

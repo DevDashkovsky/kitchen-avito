@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 
 	"kitchen-api/internal/kitchen/api"
@@ -19,12 +20,22 @@ func (h *Handler) CreateOrder(
 		}, nil
 	}
 
-	trackingToken, trackingTokenHash, err := generateTrackingToken()
-	if err != nil {
-		h.logError("generate tracking token", err)
-		return api.CreateOrder500JSONResponse{
-			InternalErrorJSONResponse: internalError(),
-		}, nil
+	var trackingToken string
+	var trackingTokenHash []byte
+	var err error
+	if request.Params.IdempotencyKey != nil {
+		trackingToken = *request.Params.IdempotencyKey
+		if !validIdempotencyKey(trackingToken) {
+			return api.CreateOrder400JSONResponse{BadRequestJSONResponse: badRequest("Некорректный ключ повтора")}, nil
+		}
+		hash := sha256.Sum256([]byte(trackingToken))
+		trackingTokenHash = hash[:]
+	} else {
+		trackingToken, trackingTokenHash, err = generateTrackingToken()
+		if err != nil {
+			h.logError("generate tracking token", err)
+			return api.CreateOrder500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
+		}
 	}
 
 	items := make([]service.CreateOrderItem, len(request.Body.OrderItems))
@@ -36,7 +47,8 @@ func (h *Handler) CreateOrder(
 		}
 	}
 
-	order, err := h.orders.Create(ctx, service.CreateOrderInput{
+	order, replay, err := h.orders.Create(ctx, service.CreateOrderInput{
+		Idempotent:        request.Params.IdempotencyKey != nil,
 		EstablishmentID:   request.Body.EstablishmentID,
 		TrackingTokenHash: trackingTokenHash,
 		CustomerName:      request.Body.CustomerName,
@@ -54,6 +66,13 @@ func (h *Handler) CreateOrder(
 		return api.CreateOrder404JSONResponse{NotFoundJSONResponse: notFound()}, nil
 	}
 
+	if errors.Is(err, domain.ErrIdempotencyKeyReused) {
+		return api.CreateOrder409JSONResponse{
+			Code:      api.OrderConflictResponseCodeIdempotencyKeyReused,
+			Message:   "Ключ повтора уже использован для другого запроса",
+			Conflicts: []api.DishConflict{},
+		}, nil
+	}
 	var orderConflict *service.OrderConflictError
 	if errors.As(err, &orderConflict) {
 		return api.CreateOrder409JSONResponse{
@@ -69,12 +88,16 @@ func (h *Handler) CreateOrder(
 		}, nil
 	}
 
-	return api.CreateOrder201JSONResponse{
+	receipt := api.CreatedOrder{
 		TrackingToken: trackingToken,
 		Status:        api.CreatedOrderStatusPendingConfirmation,
 		TotalMinor:    order.TotalMinor,
 		CreatedAt:     order.CreatedAt,
-	}, nil
+	}
+	if replay {
+		return api.CreateOrder200JSONResponse(receipt), nil
+	}
+	return api.CreateOrder201JSONResponse(receipt), nil
 }
 
 func (h *Handler) GetTrackedOrder(

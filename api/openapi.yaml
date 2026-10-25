@@ -82,6 +82,21 @@ paths:
       description: |
         Проверяет заведение, доступность блюд и ожидаемые цены, рассчитывает
         итоговую сумму и атомарно создаёт заказ вместе с позициями.
+        С Idempotency-Key повтор возвращает квитанцию первоначального создания,
+        даже если текущий статус изменился (его читайте через GET /orders/status).
+        Ключ — секрет доступа: 32 случайных байта в каноническом base64url без padding.
+        Клиент сохраняет его до отправки; он возвращается как tracking_token.
+        Без ключа каждый POST создаёт новый заказ. Ключ действует до удаления заказа.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Секретный ключ повтора; не включать в логи или URL. Повторённый заголовок запрещён.
+          schema:
+            type: string
+            minLength: 43
+            maxLength: 43
+            pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
       requestBody:
         required: true
         content:
@@ -89,6 +104,12 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateOrderRequest'
       responses:
+        '200':
+          description: Повтор — квитанция первоначального создания, не текущий статус заказа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedOrder'
         '201':
           description: Заказ создан
           content:
@@ -102,7 +123,7 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Заведение или состав заказа изменились
+          description: Заведение/меню изменились или ключ повтора занят другим запросом
           content:
             application/json:
               schema:
@@ -252,6 +273,10 @@ paths:
         - Partner
       operationId: createDish
       summary: Создать блюдо
+      description: |
+        external_id необязателен и уникален внутри заведения независимо от категории.
+        Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+        После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
       security:
         - PartnerApiKey: []
       requestBody:
@@ -275,10 +300,67 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/dishes/by-external-id:
+    get:
+      tags: [Partner]
+      operationId: getPartnerDishByExternalID
+      summary: Найти блюдо по внешнему ID
+      description: Поиск ограничен заведением из partner key. Совпадающий чужой ID не раскрывается.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - name: external_id
+          in: query
+          required: true
+          description: Ровно одно значение; повтор параметра запрещён
+          schema:
+            $ref: '#/components/schemas/ExternalDishID'
+      responses:
+        '200':
+          description: Блюдо своего заведения; external_id отсутствует до назначения привязки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
 
   /api/v1/partner/dishes/{dishId}:
+    get:
+      tags: [Partner]
+      operationId: getPartnerDish
+      summary: Получить своё блюдо
+      description: Возвращает текущую привязку каталога для сопоставления dish_id из заказа. Название и цена заказа остаются историческим снимком.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/DishId'
+      responses:
+        '200':
+          description: Блюдо своего заведения; external_id отсутствует до назначения привязки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     patch:
       tags:
         - Partner
@@ -309,6 +391,46 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/dishes/{dishId}/external-id:
+    put:
+      tags: [Partner]
+      operationId: bindDishExternalID
+      summary: Однократно привязать ID каталога к блюду
+      description: |
+        Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+        Другой уже назначенный ID даёт 409 external_id_already_bound.
+        ID другого блюда этого заведения даёт 409 external_id_conflict.
+        Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/DishId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindDishExternalIDRequest'
+      responses:
+        '200':
+          description: Блюдо с сохранённой привязкой
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -407,8 +529,18 @@ paths:
       operationId: updatePartnerOrderStatus
       summary: Изменить статус заказа
       description: |
-        Проверяет владельца заказа и допустимость перехода. Повтор уже
-        применённого статуса считается успешным.
+        Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+        разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+        Из delivering, completed и cancelled отказ запрещён (409).
+        Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+        Для rejected первоначальные причина, комментарий и updated_at не меняются,
+        даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+        до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+        она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+        Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+        confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+        При конфликте конкурентных изменений возвращается 409, если сохранённый
+        статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
       security:
         - PartnerApiKey: []
       parameters:
@@ -725,6 +857,8 @@ components:
         - price_minor
         - is_available
       properties:
+        external_id:
+          $ref: '#/components/schemas/ExternalDishID'
         id:
           type: integer
           format: int64
@@ -834,7 +968,7 @@ components:
         tracking_token:
           type: string
           minLength: 32
-          description: Случайный секрет, исходное значение которого не хранится
+          description: Случайный секрет, исходное значение которого не хранится в БД; при Idempotency-Key совпадает с ним
         status:
           type: string
           enum:
@@ -971,6 +1105,21 @@ components:
           minLength: 1
           maxLength: 100
 
+    ExternalDishID:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      description: Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+
+    BindDishExternalIDRequest:
+      type: object
+      additionalProperties: false
+      required: [external_id]
+      properties:
+        external_id:
+          $ref: '#/components/schemas/ExternalDishID'
+
     CreateDishRequest:
       type: object
       additionalProperties: false
@@ -979,6 +1128,8 @@ components:
         - name
         - price_minor
       properties:
+        external_id:
+          $ref: '#/components/schemas/ExternalDishID'
         category_id:
           type: integer
           format: int64
@@ -1135,7 +1286,8 @@ components:
           maxLength: 2000
       description: |
         rejection_reason обязателен только для статуса rejected.
-        Для причины other обязателен rejection_comment.
+        Для причины other обязателен непустой после удаления краевых пробелов rejection_comment.
+        Повтор rejected не изменяет ранее сохранённую причину или комментарий.
 
     UpdateOrderStatusResponse:
       type: object
@@ -1178,6 +1330,8 @@ components:
             - not_found
             - order_conflict
             - duplicate_category
+            - external_id_conflict
+            - external_id_already_bound
             - invalid_status_transition
             - cancellation_not_allowed
             - internal_error
@@ -1249,6 +1403,7 @@ components:
           type: string
           enum:
             - order_conflict
+            - idempotency_key_reused
         message:
           type: string
         conflicts:

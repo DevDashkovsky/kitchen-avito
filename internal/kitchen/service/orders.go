@@ -1,12 +1,15 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,8 +23,7 @@ const (
 
 type orderRepository interface {
 	GetEstablishment(context.Context, int64) (domain.Establishment, error)
-	GetOrderDishes(context.Context, int64, []int64) ([]domain.Dish, error)
-	CreateOrder(context.Context, domain.Order) (domain.Order, error)
+	WithinOrderCreation(context.Context, func(OrderCreationTx) error) error
 	GetOrderByTrackingTokenHash(context.Context, []byte) (domain.Order, error)
 	GetOrder(context.Context, int64, int64) (domain.Order, error)
 	ListOrders(
@@ -46,6 +48,15 @@ type orderRepository interface {
 	RejectExpiredOrders(context.Context, time.Duration) (int64, error)
 }
 
+// OrderCreationTx scopes creation and replay to one database transaction.
+type OrderCreationTx interface {
+	GetEstablishment(context.Context, int64) (domain.Establishment, error)
+	GetOrderDishes(context.Context, int64, []int64) ([]domain.Dish, error)
+	LockKey(context.Context, []byte) error
+	FindByTokenHash(context.Context, []byte) (domain.Order, error)
+	CreateOrder(context.Context, domain.Order) (domain.Order, error)
+}
+
 type OrderService struct {
 	repository          orderRepository
 	confirmationTimeout time.Duration
@@ -56,12 +67,13 @@ func NewOrderService(repository orderRepository, confirmationTimeout time.Durati
 }
 
 type CreateOrderItem struct {
-	DishID                 int64
-	Quantity               int32
-	ExpectedUnitPriceMinor int64
+	DishID                 int64 `json:"dish_id"`
+	Quantity               int32 `json:"quantity"`
+	ExpectedUnitPriceMinor int64 `json:"expected_unit_price_minor"`
 }
 
 type CreateOrderInput struct {
+	Idempotent        bool
 	EstablishmentID   int64
 	TrackingTokenHash []byte
 	CustomerName      string
@@ -96,56 +108,101 @@ func (e *OrderConflictError) Unwrap() error {
 	return domain.ErrConflict
 }
 
-func (s *OrderService) Create(
-	ctx context.Context,
-	input CreateOrderInput,
-) (domain.Order, error) {
+func (s *OrderService) Create(ctx context.Context, input CreateOrderInput) (domain.Order, bool, error) {
 	normalized, err := normalizeCreateOrderInput(input)
 	if err != nil {
-		return domain.Order{}, err
+		return domain.Order{}, false, err
 	}
-
-	establishment, err := s.repository.GetEstablishment(ctx, normalized.EstablishmentID)
+	normalized.Items, _, err = combineOrderItems(normalized.Items)
 	if err != nil {
-		return domain.Order{}, fmt.Errorf("get order establishment: %w", err)
+		return domain.Order{}, false, err
 	}
-	if !establishment.AcceptsOrders {
-		return domain.Order{}, &OrderConflictError{Conflicts: []DishConflict{}}
-	}
-
-	items, totalMinor, conflicts, err := s.prepareOrderItems(ctx, normalized)
-	if err != nil {
-		return domain.Order{}, err
-	}
-	if len(conflicts) > 0 {
-		return domain.Order{}, &OrderConflictError{Conflicts: conflicts}
-	}
-
-	order, err := s.repository.CreateOrder(ctx, domain.Order{
-		EstablishmentID:   normalized.EstablishmentID,
-		TrackingTokenHash: normalized.TrackingTokenHash,
-		Status:            domain.OrderStatusPendingConfirmation,
-		CustomerName:      normalized.CustomerName,
-		CustomerPhone:     normalized.CustomerPhone,
-		DeliveryAddress:   normalized.DeliveryAddress,
-		Comment:           normalized.Comment,
-		TotalMinor:        totalMinor,
-		Items:             items,
-	})
-	var menuChanged *domain.MenuChangedError
-	if errors.As(err, &menuChanged) {
-		return domain.Order{}, &OrderConflictError{
-			Conflicts: dishConflictsFromCurrentState(normalized.Items, menuChanged.Dishes),
+	var fingerprint []byte
+	if normalized.Idempotent {
+		fingerprint, err = orderFingerprint(normalized)
+		if err != nil {
+			return domain.Order{}, false, err
 		}
 	}
-	if errors.Is(err, domain.ErrConflict) {
-		return domain.Order{}, &OrderConflictError{Conflicts: []DishConflict{}}
-	}
+	var order domain.Order
+	var replay bool
+	err = s.repository.WithinOrderCreation(ctx, func(tx OrderCreationTx) error {
+		if normalized.Idempotent {
+			if err := tx.LockKey(ctx, normalized.TrackingTokenHash); err != nil {
+				return err
+			}
+			existing, err := tx.FindByTokenHash(ctx, normalized.TrackingTokenHash)
+			switch {
+			case err == nil:
+				if !bytes.Equal(existing.RequestFingerprint, fingerprint) {
+					return domain.ErrIdempotencyKeyReused
+				}
+				order, replay = existing, true
+				return nil
+			case !errors.Is(err, domain.ErrNotFound):
+				return err
+			}
+		}
+		establishment, err := tx.GetEstablishment(ctx, normalized.EstablishmentID)
+		if err != nil {
+			return fmt.Errorf("get order establishment: %w", err)
+		}
+		if !establishment.AcceptsOrders {
+			return &OrderConflictError{Conflicts: []DishConflict{}}
+		}
+		items, totalMinor, conflicts, err := s.prepareOrderItems(ctx, tx, normalized)
+		if err != nil {
+			return err
+		}
+		if len(conflicts) > 0 {
+			return &OrderConflictError{Conflicts: conflicts}
+		}
+		order, err = tx.CreateOrder(ctx, domain.Order{
+			EstablishmentID: normalized.EstablishmentID, TrackingTokenHash: normalized.TrackingTokenHash,
+			RequestFingerprint: fingerprint, Status: domain.OrderStatusPendingConfirmation,
+			CustomerName: normalized.CustomerName, CustomerPhone: normalized.CustomerPhone,
+			DeliveryAddress: normalized.DeliveryAddress, Comment: normalized.Comment,
+			TotalMinor: totalMinor, Items: items,
+		})
+		var menuChanged *domain.MenuChangedError
+		if errors.As(err, &menuChanged) {
+			return &OrderConflictError{Conflicts: dishConflictsFromCurrentState(normalized.Items, menuChanged.Dishes)}
+		}
+		if errors.Is(err, domain.ErrConflict) {
+			return &OrderConflictError{Conflicts: []DishConflict{}}
+		}
+		return err
+	})
 	if err != nil {
-		return domain.Order{}, fmt.Errorf("create order: %w", err)
+		return domain.Order{}, false, fmt.Errorf("create order: %w", err)
 	}
+	return order, replay, nil
+}
 
-	return order, nil
+// orderFingerprint is versioned independently of transport JSON. Callers pass
+// normalized input with duplicate dish lines combined by the existing rules.
+func orderFingerprint(input CreateOrderInput) ([]byte, error) {
+	items := append([]CreateOrderItem(nil), input.Items...)
+	sort.Slice(items, func(i, j int) bool { return items[i].DishID < items[j].DishID })
+	canonical := struct {
+		Version         int               `json:"version"`
+		EstablishmentID int64             `json:"establishment_id"`
+		Name            string            `json:"name"`
+		Phone           string            `json:"phone"`
+		Address         string            `json:"address"`
+		Comment         *string           `json:"comment"`
+		Items           []CreateOrderItem `json:"items"`
+	}{
+		Version: 1, EstablishmentID: input.EstablishmentID,
+		Name: input.CustomerName, Phone: input.CustomerPhone, Address: input.DeliveryAddress,
+		Comment: input.Comment, Items: items,
+	}
+	payload, err := json.Marshal(canonical)
+	if err != nil {
+		return nil, fmt.Errorf("encode order fingerprint: %w", err)
+	}
+	hash := sha256.Sum256(payload)
+	return hash[:], nil
 }
 
 func (s *OrderService) GetTracked(
@@ -410,6 +467,7 @@ func dishConflictsFromCurrentState(
 
 func (s *OrderService) prepareOrderItems(
 	ctx context.Context,
+	tx OrderCreationTx,
 	input CreateOrderInput,
 ) ([]domain.OrderItem, int64, []DishConflict, error) {
 	combined, dishIDs, err := combineOrderItems(input.Items)
@@ -417,7 +475,7 @@ func (s *OrderService) prepareOrderItems(
 		return nil, 0, nil, err
 	}
 
-	dishes, err := s.repository.GetOrderDishes(ctx, input.EstablishmentID, dishIDs)
+	dishes, err := tx.GetOrderDishes(ctx, input.EstablishmentID, dishIDs)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("get dishes for order: %w", err)
 	}
@@ -472,7 +530,7 @@ func normalizeCreateOrderInput(input CreateOrderInput) (CreateOrderInput, error)
 	input.CustomerPhone = strings.TrimSpace(input.CustomerPhone)
 	input.DeliveryAddress = strings.TrimSpace(input.DeliveryAddress)
 
-	if input.EstablishmentID < 1 || len(input.TrackingTokenHash) == 0 ||
+	if input.EstablishmentID < 1 || len(input.TrackingTokenHash) != sha256.Size ||
 		len(input.Items) == 0 || len(input.Items) > maxOrderItems ||
 		len([]rune(input.CustomerName)) < 1 || len([]rune(input.CustomerName)) > 200 ||
 		len([]rune(input.CustomerPhone)) < 5 || len([]rune(input.CustomerPhone)) > 32 ||

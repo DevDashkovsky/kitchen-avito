@@ -38,6 +38,8 @@ entity "dishes" as dishes {
   * id : BIGINT <<PK>>
   --
   * category_id : BIGINT <<FK>>
+  * establishment_id : BIGINT <<FK>>
+  external_id : TEXT
   * name : TEXT
   * description : TEXT
   * price_minor : BIGINT
@@ -51,6 +53,7 @@ entity "orders" as orders {
   --
   * establishment_id : BIGINT <<FK>>
   * tracking_token_hash : BYTEA <<UQ>>
+  request_fingerprint : BYTEA
   * status : TEXT
   * customer_name : TEXT
   * customer_phone : TEXT
@@ -81,6 +84,15 @@ dishes "1" --> "0..*" order_items : исходное блюдо
 
 note right of menu_categories
   UNIQUE (establishment_id, lower(name))
+  UNIQUE (id, establishment_id)
+end note
+
+note left of dishes
+  UNIQUE (establishment_id, external_id)
+  NULL external_id допускается многократно
+  FK (category_id, establishment_id)
+  -> menu_categories (id, establishment_id)
+  external_id: 1–128 ASCII, регистр значим
 end note
 
 note right of order_items

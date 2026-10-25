@@ -19,6 +19,7 @@ const categoryColumns = `
     updated_at`
 
 const dishColumns = `
+    external_id,
     id,
     category_id,
     name,
@@ -134,6 +135,8 @@ func (r *Repository) CreateDish(
 ) (domain.Dish, error) {
 	query := `
 INSERT INTO dishes (
+    establishment_id,
+    external_id,
     category_id,
     name,
     description,
@@ -141,6 +144,8 @@ INSERT INTO dishes (
     is_available
 )
 SELECT
+    c.establishment_id,
+    $7,
     c.id,
     $3,
     $4,
@@ -160,9 +165,10 @@ RETURNING ` + dishColumns
 		dish.Description,
 		dish.PriceMinor,
 		dish.IsAvailable,
+		dish.ExternalID,
 	))
 	if err != nil {
-		return domain.Dish{}, menuError("create dish", err)
+		return domain.Dish{}, dishError("create dish", err)
 	}
 
 	return created, nil
@@ -260,6 +266,7 @@ func listDishes(
 ) ([]domain.Dish, error) {
 	query := `
 SELECT
+    d.external_id,
     d.id,
     d.category_id,
     d.name,
@@ -317,6 +324,7 @@ func scanDish(row rowScanner) (domain.Dish, error) {
 	var dish domain.Dish
 
 	err := row.Scan(
+		&dish.ExternalID,
 		&dish.ID,
 		&dish.CategoryID,
 		&dish.Name,

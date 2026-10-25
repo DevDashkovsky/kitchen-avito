@@ -14,7 +14,15 @@ lint:
 test-e2e:
 	@set -eu; \
 	project="kitchen-avito-e2e-$$$$"; \
-	cleanup() { $(COMPOSE) -p "$$project" down -v || true; }; \
+	cleanup() { \
+		status=$$?; \
+		trap - EXIT; \
+		if [ "$$status" -ne 0 ]; then \
+			$(COMPOSE) -p "$$project" logs --no-color --tail=100 || true; \
+		fi; \
+		$(COMPOSE) -p "$$project" down -v || true; \
+		exit "$$status"; \
+	}; \
 	trap cleanup EXIT; \
 	trap 'exit 130' INT; \
 	trap 'exit 143' TERM; \
@@ -30,3 +38,14 @@ test-e2e:
 	KITCHEN_E2E_URL="http://$$kitchen_address" \
 	E2E_CONFIRMATION_WAIT=20s \
 	go test -v ./tests/e2e -count=1
+
+.PHONY: test-postgres check-generated check-ci
+
+test-postgres:
+	bash scripts/test-postgres.sh
+
+check-generated:
+	bash scripts/check-generated.sh
+
+check-ci:
+	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes=

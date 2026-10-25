@@ -40,11 +40,11 @@ func (s OrderStatus) CanTransitionTo(next OrderStatus) bool {
 	case OrderStatusPendingConfirmation:
 		return next == OrderStatusConfirmed || next == OrderStatusRejected || next == OrderStatusCancelled
 	case OrderStatusConfirmed:
-		return next == OrderStatusPreparing
+		return next == OrderStatusPreparing || next == OrderStatusRejected
 	case OrderStatusPreparing:
-		return next == OrderStatusReadyForDelivery
+		return next == OrderStatusReadyForDelivery || next == OrderStatusRejected
 	case OrderStatusReadyForDelivery:
-		return next == OrderStatusDelivering
+		return next == OrderStatusDelivering || next == OrderStatusRejected
 	case OrderStatusDelivering:
 		return next == OrderStatusCompleted
 	default:
@@ -76,20 +76,21 @@ func (r RejectionReason) IsValid() bool {
 }
 
 type Order struct {
-	ID                int64
-	EstablishmentID   int64
-	TrackingTokenHash []byte
-	Status            OrderStatus
-	CustomerName      string
-	CustomerPhone     string
-	DeliveryAddress   string
-	Comment           *string
-	TotalMinor        int64
-	RejectionReason   *RejectionReason
-	RejectionComment  *string
-	Items             []OrderItem
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                 int64
+	EstablishmentID    int64
+	TrackingTokenHash  []byte
+	RequestFingerprint []byte
+	Status             OrderStatus
+	CustomerName       string
+	CustomerPhone      string
+	DeliveryAddress    string
+	Comment            *string
+	TotalMinor         int64
+	RejectionReason    *RejectionReason
+	RejectionComment   *string
+	Items              []OrderItem
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type OrderItem struct {

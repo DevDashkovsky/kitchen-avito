@@ -155,6 +155,8 @@ func newHTTPHandler(
 	router.Use(middleware.RequestID)
 	router.Use(handler.RequestLogger)
 	router.Use(handler.RequestGuard(requestTimeout))
+	router.Use(handler.IdempotencyKeyGuard)
+	router.Use(handler.ExternalDishQueryGuard)
 	router.Get("/healthz", handler.Health)
 	router.Get("/readyz", readiness)
 	router.Mount("/", businessAPI)

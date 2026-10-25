@@ -9,6 +9,9 @@ import (
 )
 
 type menuRepository interface {
+	GetDish(context.Context, int64, int64) (domain.Dish, error)
+	GetDishByExternalID(context.Context, int64, string) (domain.Dish, error)
+	BindDishExternalID(context.Context, int64, int64, string) (domain.Dish, error)
 	GetMenu(context.Context, int64) (domain.Menu, error)
 	CreateCategory(context.Context, int64, string) (domain.Category, error)
 	UpdateCategory(context.Context, int64, int64, string) (domain.Category, error)
@@ -25,6 +28,7 @@ func NewMenuService(repository menuRepository) *MenuService {
 }
 
 type NewDish struct {
+	ExternalID  *string
 	CategoryID  int64
 	Name        string
 	Description string
@@ -91,6 +95,9 @@ func (s *MenuService) CreateDish(
 	establishmentID int64,
 	input NewDish,
 ) (domain.Dish, error) {
+	if input.ExternalID != nil && !validExternalDishID(*input.ExternalID) {
+		return domain.Dish{}, domain.ErrInvalidInput
+	}
 	name, err := normalizeName(input.Name, 200)
 	if err != nil {
 		return domain.Dish{}, err
@@ -101,6 +108,7 @@ func (s *MenuService) CreateDish(
 
 	dish, err := s.repository.CreateDish(ctx, establishmentID, domain.Dish{
 		CategoryID:  input.CategoryID,
+		ExternalID:  input.ExternalID,
 		Name:        name,
 		Description: input.Description,
 		PriceMinor:  input.PriceMinor,

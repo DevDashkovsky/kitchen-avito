@@ -21,6 +21,8 @@ import (
 const (
 	ErrorResponseCodeCancellationNotAllowed  ErrorResponseCode = "cancellation_not_allowed"
 	ErrorResponseCodeDuplicateCategory       ErrorResponseCode = "duplicate_category"
+	ErrorResponseCodeExternalIDAlreadyBound  ErrorResponseCode = "external_id_already_bound"
+	ErrorResponseCodeExternalIDConflict      ErrorResponseCode = "external_id_conflict"
 	ErrorResponseCodeInternalError           ErrorResponseCode = "internal_error"
 	ErrorResponseCodeInvalidStatusTransition ErrorResponseCode = "invalid_status_transition"
 	ErrorResponseCodeNotFound                ErrorResponseCode = "not_found"
@@ -35,6 +37,10 @@ func (e ErrorResponseCode) Valid() bool {
 	case ErrorResponseCodeCancellationNotAllowed:
 		return true
 	case ErrorResponseCodeDuplicateCategory:
+		return true
+	case ErrorResponseCodeExternalIDAlreadyBound:
+		return true
+	case ErrorResponseCodeExternalIDConflict:
 		return true
 	case ErrorResponseCodeInternalError:
 		return true
@@ -185,6 +191,12 @@ func (e ValidationErrorResponseCode) Valid() bool {
 	}
 }
 
+// BindDishExternalIDRequest defines model for BindDishExternalIDRequest.
+type BindDishExternalIDRequest struct {
+	// ExternalID Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+	ExternalID ExternalDishID `json:"external_id"`
+}
+
 // Category defines model for Category.
 type Category struct {
 	ID   int64  `json:"id"`
@@ -200,18 +212,24 @@ type CategoryWriteRequest struct {
 type CreateDishRequest struct {
 	CategoryID  int64   `json:"category_id"`
 	Description *string `json:"description,omitempty"`
-	IsAvailable *bool   `json:"is_available,omitempty"`
-	Name        string  `json:"name"`
-	PriceMinor  int64   `json:"price_minor"`
+
+	// ExternalID Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+	ExternalID  *ExternalDishID `json:"external_id,omitempty"`
+	IsAvailable *bool           `json:"is_available,omitempty"`
+	Name        string          `json:"name"`
+	PriceMinor  int64           `json:"price_minor"`
 }
 
 // Dish defines model for Dish.
 type Dish struct {
 	CategoryID  int64  `json:"category_id"`
 	Description string `json:"description"`
-	ID          int64  `json:"id"`
-	IsAvailable bool   `json:"is_available"`
-	Name        string `json:"name"`
+
+	// ExternalID Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+	ExternalID  *ExternalDishID `json:"external_id,omitempty"`
+	ID          int64           `json:"id"`
+	IsAvailable bool            `json:"is_available"`
+	Name        string          `json:"name"`
 
 	// PriceMinor Цена в копейках
 	PriceMinor int64 `json:"price_minor"`
@@ -232,6 +250,9 @@ type Establishment struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`
 }
+
+// ExternalDishID Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+type ExternalDishID = string
 
 // FieldError defines model for FieldError.
 type FieldError struct {
@@ -323,7 +344,8 @@ type UpdateEstablishmentRequest struct {
 }
 
 // UpdateOrderStatusRequest rejection_reason обязателен только для статуса rejected.
-// Для причины other обязателен rejection_comment.
+// Для причины other обязателен непустой после удаления краевых пробелов rejection_comment.
+// Повтор rejected не изменяет ранее сохранённую причину или комментарий.
 type UpdateOrderStatusRequest struct {
 	RejectionComment *string                        `json:"rejection_comment,omitempty"`
 	RejectionReason  *PartnerRejectionReason        `json:"rejection_reason,omitempty"`
@@ -388,6 +410,12 @@ type PayloadTooLarge = ValidationErrorResponse
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = ErrorResponse
 
+// GetPartnerDishByExternalIDParams defines parameters for GetPartnerDishByExternalID.
+type GetPartnerDishByExternalIDParams struct {
+	// ExternalID Ровно одно значение; повтор параметра запрещён
+	ExternalID ExternalDishID `form:"external_id" json:"external_id"`
+}
+
 // ListPartnerOrdersParams defines parameters for ListPartnerOrders.
 type ListPartnerOrdersParams struct {
 	// Status Один статус для фильтрации заказов
@@ -411,6 +439,9 @@ type CreateDishJSONRequestBody = CreateDishRequest
 
 // UpdateDishJSONRequestBody defines body for UpdateDish for application/json ContentType.
 type UpdateDishJSONRequestBody = UpdateDishRequest
+
+// BindDishExternalIDJSONRequestBody defines body for BindDishExternalID for application/json ContentType.
+type BindDishExternalIDJSONRequestBody = BindDishExternalIDRequest
 
 // UpdateEstablishmentJSONRequestBody defines body for UpdateEstablishment for application/json ContentType.
 type UpdateEstablishmentJSONRequestBody = UpdateEstablishmentRequest
@@ -522,6 +553,10 @@ type ClientInterface interface {
 
 	// CreateDishWithBody Создать блюдо
 	//
+	// external_id необязателен и уникален внутри заведения независимо от категории.
+	// Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+	// После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
+	//
 	// Takes any type of body and a specified content type.
 	//
 	// Corresponds with POST /api/v1/partner/dishes (the `CreateDish` operationId).
@@ -529,10 +564,28 @@ type ClientInterface interface {
 
 	// CreateDish Создать блюдо
 	//
+	// external_id необязателен и уникален внутри заведения независимо от категории.
+	// Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+	// После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
+	//
 	// Takes a body of the `application/json` content type.
 	//
 	// Corresponds with POST /api/v1/partner/dishes (the `CreateDish` operationId).
 	CreateDish(ctx context.Context, body CreateDishJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetPartnerDishByExternalID Найти блюдо по внешнему ID
+	//
+	// Поиск ограничен заведением из partner key. Совпадающий чужой ID не раскрывается.
+	//
+	// Corresponds with GET /api/v1/partner/dishes/by-external-id (the `GetPartnerDishByExternalID` operationId).
+	GetPartnerDishByExternalID(ctx context.Context, params *GetPartnerDishByExternalIDParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetPartnerDish Получить своё блюдо
+	//
+	// Возвращает текущую привязку каталога для сопоставления dish_id из заказа. Название и цена заказа остаются историческим снимком.
+	//
+	// Corresponds with GET /api/v1/partner/dishes/{dishId} (the `GetPartnerDish` operationId).
+	GetPartnerDish(ctx context.Context, dishID DishID, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UpdateDishWithBody Изменить блюдо
 	//
@@ -547,6 +600,30 @@ type ClientInterface interface {
 	//
 	// Corresponds with PATCH /api/v1/partner/dishes/{dishId} (the `UpdateDish` operationId).
 	UpdateDish(ctx context.Context, dishID DishID, body UpdateDishJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// BindDishExternalIDWithBody Однократно привязать ID каталога к блюду
+	//
+	// Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+	// Другой уже назначенный ID даёт 409 external_id_already_bound.
+	// ID другого блюда этого заведения даёт 409 external_id_conflict.
+	// Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+	//
+	// Takes any type of body and a specified content type.
+	//
+	// Corresponds with PUT /api/v1/partner/dishes/{dishId}/external-id (the `BindDishExternalID` operationId).
+	BindDishExternalIDWithBody(ctx context.Context, dishID DishID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// BindDishExternalID Однократно привязать ID каталога к блюду
+	//
+	// Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+	// Другой уже назначенный ID даёт 409 external_id_already_bound.
+	// ID другого блюда этого заведения даёт 409 external_id_conflict.
+	// Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+	//
+	// Takes a body of the `application/json` content type.
+	//
+	// Corresponds with PUT /api/v1/partner/dishes/{dishId}/external-id (the `BindDishExternalID` operationId).
+	BindDishExternalID(ctx context.Context, dishID DishID, body BindDishExternalIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// UpdateEstablishmentWithBody Изменить приём заказов
 	//
@@ -587,8 +664,18 @@ type ClientInterface interface {
 
 	// UpdatePartnerOrderStatusWithBody Изменить статус заказа
 	//
-	// Проверяет владельца заказа и допустимость перехода. Повтор уже
-	// применённого статуса считается успешным.
+	// Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+	// разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+	// Из delivering, completed и cancelled отказ запрещён (409).
+	// Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+	// Для rejected первоначальные причина, комментарий и updated_at не меняются,
+	// даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+	// до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+	// она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+	// Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+	// confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+	// При конфликте конкурентных изменений возвращается 409, если сохранённый
+	// статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
 	//
 	// Takes any type of body and a specified content type.
 	//
@@ -597,8 +684,18 @@ type ClientInterface interface {
 
 	// UpdatePartnerOrderStatus Изменить статус заказа
 	//
-	// Проверяет владельца заказа и допустимость перехода. Повтор уже
-	// применённого статуса считается успешным.
+	// Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+	// разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+	// Из delivering, completed и cancelled отказ запрещён (409).
+	// Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+	// Для rejected первоначальные причина, комментарий и updated_at не меняются,
+	// даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+	// до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+	// она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+	// Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+	// confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+	// При конфликте конкурентных изменений возвращается 409, если сохранённый
+	// статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
 	//
 	// Takes a body of the `application/json` content type.
 	//
@@ -676,6 +773,10 @@ func (c *Client) UpdateCategory(ctx context.Context, categoryID CategoryID, body
 
 // CreateDishWithBody Создать блюдо
 //
+// external_id необязателен и уникален внутри заведения независимо от категории.
+// Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+// После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
+//
 // Takes any type of body and a specified content type.
 //
 // Corresponds with POST /api/v1/partner/dishes (the `CreateDish` operationId).
@@ -693,11 +794,49 @@ func (c *Client) CreateDishWithBody(ctx context.Context, contentType string, bod
 
 // CreateDish Создать блюдо
 //
+// external_id необязателен и уникален внутри заведения независимо от категории.
+// Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+// После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
+//
 // Takes a body of the `application/json` content type.
 //
 // Corresponds with POST /api/v1/partner/dishes (the `CreateDish` operationId).
 func (c *Client) CreateDish(ctx context.Context, body CreateDishJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateDishRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetPartnerDishByExternalID Найти блюдо по внешнему ID
+//
+// Поиск ограничен заведением из partner key. Совпадающий чужой ID не раскрывается.
+//
+// Corresponds with GET /api/v1/partner/dishes/by-external-id (the `GetPartnerDishByExternalID` operationId).
+func (c *Client) GetPartnerDishByExternalID(ctx context.Context, params *GetPartnerDishByExternalIDParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPartnerDishByExternalIDRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// GetPartnerDish Получить своё блюдо
+//
+// Возвращает текущую привязку каталога для сопоставления dish_id из заказа. Название и цена заказа остаются историческим снимком.
+//
+// Corresponds with GET /api/v1/partner/dishes/{dishId} (the `GetPartnerDish` operationId).
+func (c *Client) GetPartnerDish(ctx context.Context, dishID DishID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetPartnerDishRequest(c.Server, dishID)
 	if err != nil {
 		return nil, err
 	}
@@ -732,6 +871,50 @@ func (c *Client) UpdateDishWithBody(ctx context.Context, dishID DishID, contentT
 // Corresponds with PATCH /api/v1/partner/dishes/{dishId} (the `UpdateDish` operationId).
 func (c *Client) UpdateDish(ctx context.Context, dishID DishID, body UpdateDishJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewUpdateDishRequest(c.Server, dishID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// BindDishExternalIDWithBody Однократно привязать ID каталога к блюду
+//
+// Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+// Другой уже назначенный ID даёт 409 external_id_already_bound.
+// ID другого блюда этого заведения даёт 409 external_id_conflict.
+// Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+//
+// Takes any type of body and a specified content type.
+//
+// Corresponds with PUT /api/v1/partner/dishes/{dishId}/external-id (the `BindDishExternalID` operationId).
+func (c *Client) BindDishExternalIDWithBody(ctx context.Context, dishID DishID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBindDishExternalIDRequestWithBody(c.Server, dishID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+// BindDishExternalID Однократно привязать ID каталога к блюду
+//
+// Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+// Другой уже назначенный ID даёт 409 external_id_already_bound.
+// ID другого блюда этого заведения даёт 409 external_id_conflict.
+// Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+//
+// Takes a body of the `application/json` content type.
+//
+// Corresponds with PUT /api/v1/partner/dishes/{dishId}/external-id (the `BindDishExternalID` operationId).
+func (c *Client) BindDishExternalID(ctx context.Context, dishID DishID, body BindDishExternalIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBindDishExternalIDRequest(c.Server, dishID, body)
 	if err != nil {
 		return nil, err
 	}
@@ -831,8 +1014,18 @@ func (c *Client) GetPartnerOrder(ctx context.Context, orderID OrderID, reqEditor
 
 // UpdatePartnerOrderStatusWithBody Изменить статус заказа
 //
-// Проверяет владельца заказа и допустимость перехода. Повтор уже
-// применённого статуса считается успешным.
+// Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+// разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+// Из delivering, completed и cancelled отказ запрещён (409).
+// Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+// Для rejected первоначальные причина, комментарий и updated_at не меняются,
+// даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+// до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+// она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+// Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+// confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+// При конфликте конкурентных изменений возвращается 409, если сохранённый
+// статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
 //
 // Takes any type of body and a specified content type.
 //
@@ -851,8 +1044,18 @@ func (c *Client) UpdatePartnerOrderStatusWithBody(ctx context.Context, orderID O
 
 // UpdatePartnerOrderStatus Изменить статус заказа
 //
-// Проверяет владельца заказа и допустимость перехода. Повтор уже
-// применённого статуса считается успешным.
+// Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+// разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+// Из delivering, completed и cancelled отказ запрещён (409).
+// Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+// Для rejected первоначальные причина, комментарий и updated_at не меняются,
+// даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+// до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+// она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+// Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+// confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+// При конфликте конкурентных изменений возвращается 409, если сохранённый
+// статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
 //
 // Takes a body of the `application/json` content type.
 //
@@ -996,6 +1199,90 @@ func NewCreateDishRequestWithBody(server string, contentType string, body io.Rea
 	return req, nil
 }
 
+// NewGetPartnerDishByExternalIDRequest constructs an http.Request for the GetPartnerDishByExternalID method
+func NewGetPartnerDishByExternalIDRequest(server string, params *GetPartnerDishByExternalIDParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/partner/dishes/by-external-id")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		// queryValues collects non-styled parameters (passthrough, JSON)
+		// that are safe to round-trip through url.Values.Encode().
+		queryValues := queryURL.Query()
+		// rawQueryFragments collects pre-encoded query fragments from
+		// styled parameters, preserving literal commas as delimiters
+		// per the OpenAPI spec (e.g. "color=blue,black,brown").
+		var rawQueryFragments []string
+
+		if queryFrag, err := runtime.StyleParamWithOptions("form", true, "external_id", params.ExternalID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+			return nil, err
+		} else {
+			for _, qp := range strings.Split(queryFrag, "&") {
+				rawQueryFragments = append(rawQueryFragments, qp)
+			}
+		}
+
+		if encoded := queryValues.Encode(); encoded != "" {
+			rawQueryFragments = append(rawQueryFragments, encoded)
+		}
+		queryURL.RawQuery = strings.Join(rawQueryFragments, "&")
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetPartnerDishRequest constructs an http.Request for the GetPartnerDish method
+func NewGetPartnerDishRequest(server string, dishID DishID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "dishId", dishID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: "int64"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/partner/dishes/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewUpdateDishRequest calls the generic UpdateDish builder with application/json body
 func NewUpdateDishRequest(server string, dishID DishID, body UpdateDishJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -1034,6 +1321,53 @@ func NewUpdateDishRequestWithBody(server string, dishID DishID, contentType stri
 	}
 
 	req, err := http.NewRequest(http.MethodPatch, queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewBindDishExternalIDRequest calls the generic BindDishExternalID builder with application/json body
+func NewBindDishExternalIDRequest(server string, dishID DishID, body BindDishExternalIDJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewBindDishExternalIDRequestWithBody(server, dishID, "application/json", bodyReader)
+}
+
+// NewBindDishExternalIDRequestWithBody constructs an http.Request for the BindDishExternalID method, with any body, and a specified content type
+func NewBindDishExternalIDRequestWithBody(server string, dishID DishID, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "dishId", dishID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "integer", Format: "int64"})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/partner/dishes/%s/external-id", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -1343,6 +1677,10 @@ type ClientWithResponsesInterface interface {
 
 	// CreateDishWithBodyWithResponse Создать блюдо
 	//
+	// external_id необязателен и уникален внутри заведения независимо от категории.
+	// Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+	// После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
+	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/partner/dishes (the `CreateDish` operationId).
@@ -1350,10 +1688,32 @@ type ClientWithResponsesInterface interface {
 
 	// CreateDishWithResponse Создать блюдо
 	//
+	// external_id необязателен и уникален внутри заведения независимо от категории.
+	// Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+	// После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
+	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
 	// Corresponds with POST /api/v1/partner/dishes (the `CreateDish` operationId).
 	CreateDishWithResponse(ctx context.Context, body CreateDishJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDishResponse, error)
+
+	// GetPartnerDishByExternalIDWithResponse Найти блюдо по внешнему ID
+	//
+	// Поиск ограничен заведением из partner key. Совпадающий чужой ID не раскрывается.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/partner/dishes/by-external-id (the `GetPartnerDishByExternalID` operationId).
+	GetPartnerDishByExternalIDWithResponse(ctx context.Context, params *GetPartnerDishByExternalIDParams, reqEditors ...RequestEditorFn) (*GetPartnerDishByExternalIDResponse, error)
+
+	// GetPartnerDishWithResponse Получить своё блюдо
+	//
+	// Возвращает текущую привязку каталога для сопоставления dish_id из заказа. Название и цена заказа остаются историческим снимком.
+	//
+	// Returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with GET /api/v1/partner/dishes/{dishId} (the `GetPartnerDish` operationId).
+	GetPartnerDishWithResponse(ctx context.Context, dishID DishID, reqEditors ...RequestEditorFn) (*GetPartnerDishResponse, error)
 
 	// UpdateDishWithBodyWithResponse Изменить блюдо
 	//
@@ -1368,6 +1728,30 @@ type ClientWithResponsesInterface interface {
 	//
 	// Corresponds with PATCH /api/v1/partner/dishes/{dishId} (the `UpdateDish` operationId).
 	UpdateDishWithResponse(ctx context.Context, dishID DishID, body UpdateDishJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateDishResponse, error)
+
+	// BindDishExternalIDWithBodyWithResponse Однократно привязать ID каталога к блюду
+	//
+	// Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+	// Другой уже назначенный ID даёт 409 external_id_already_bound.
+	// ID другого блюда этого заведения даёт 409 external_id_conflict.
+	// Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+	//
+	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/partner/dishes/{dishId}/external-id (the `BindDishExternalID` operationId).
+	BindDishExternalIDWithBodyWithResponse(ctx context.Context, dishID DishID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BindDishExternalIDResponse, error)
+
+	// BindDishExternalIDWithResponse Однократно привязать ID каталога к блюду
+	//
+	// Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+	// Другой уже назначенный ID даёт 409 external_id_already_bound.
+	// ID другого блюда этого заведения даёт 409 external_id_conflict.
+	// Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+	//
+	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+	//
+	// Corresponds with PUT /api/v1/partner/dishes/{dishId}/external-id (the `BindDishExternalID` operationId).
+	BindDishExternalIDWithResponse(ctx context.Context, dishID DishID, body BindDishExternalIDJSONRequestBody, reqEditors ...RequestEditorFn) (*BindDishExternalIDResponse, error)
 
 	// UpdateEstablishmentWithBodyWithResponse Изменить приём заказов
 	//
@@ -1414,8 +1798,18 @@ type ClientWithResponsesInterface interface {
 
 	// UpdatePartnerOrderStatusWithBodyWithResponse Изменить статус заказа
 	//
-	// Проверяет владельца заказа и допустимость перехода. Повтор уже
-	// применённого статуса считается успешным.
+	// Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+	// разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+	// Из delivering, completed и cancelled отказ запрещён (409).
+	// Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+	// Для rejected первоначальные причина, комментарий и updated_at не меняются,
+	// даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+	// до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+	// она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+	// Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+	// confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+	// При конфликте конкурентных изменений возвращается 409, если сохранённый
+	// статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
 	//
 	// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -1424,8 +1818,18 @@ type ClientWithResponsesInterface interface {
 
 	// UpdatePartnerOrderStatusWithResponse Изменить статус заказа
 	//
-	// Проверяет владельца заказа и допустимость перехода. Повтор уже
-	// применённого статуса считается успешным.
+	// Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+	// разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+	// Из delivering, completed и cancelled отказ запрещён (409).
+	// Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+	// Для rejected первоначальные причина, комментарий и updated_at не меняются,
+	// даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+	// до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+	// она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+	// Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+	// confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+	// При конфликте конкурентных изменений возвращается 409, если сохранённый
+	// статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
 	//
 	// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 	//
@@ -1603,6 +2007,8 @@ type CreateDishResponse struct {
 	JSON401 *Unauthorized
 	// JSON404 the response for an HTTP 404 `application/json` response
 	JSON404 *NotFound
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Conflict
 	// JSON413 the response for an HTTP 413 `application/json` response
 	JSON413 *PayloadTooLarge
 	// JSON500 the response for an HTTP 500 `application/json` response
@@ -1627,6 +2033,11 @@ func (r CreateDishResponse) GetJSON401() *Unauthorized {
 // GetJSON404 returns the response for an HTTP 404 `application/json` response
 func (r CreateDishResponse) GetJSON404() *NotFound {
 	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r CreateDishResponse) GetJSON409() *Conflict {
+	return r.JSON409
 }
 
 // GetJSON413 returns the response for an HTTP 413 `application/json` response
@@ -1662,6 +2073,144 @@ func (r CreateDishResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r CreateDishResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetPartnerDishByExternalIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Dish
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *InternalError
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetPartnerDishByExternalIDResponse) GetJSON200() *Dish {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetPartnerDishByExternalIDResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetPartnerDishByExternalIDResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetPartnerDishByExternalIDResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetPartnerDishByExternalIDResponse) GetJSON500() *InternalError {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetPartnerDishByExternalIDResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetPartnerDishByExternalIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetPartnerDishByExternalIDResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetPartnerDishByExternalIDResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetPartnerDishResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Dish
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *InternalError
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r GetPartnerDishResponse) GetJSON200() *Dish {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r GetPartnerDishResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r GetPartnerDishResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r GetPartnerDishResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r GetPartnerDishResponse) GetJSON500() *InternalError {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r GetPartnerDishResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r GetPartnerDishResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetPartnerDishResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetPartnerDishResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -1738,6 +2287,89 @@ func (r UpdateDishResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r UpdateDishResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type BindDishExternalIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	// JSON200 the response for an HTTP 200 `application/json` response
+	JSON200 *Dish
+	// JSON400 the response for an HTTP 400 `application/json` response
+	JSON400 *BadRequest
+	// JSON401 the response for an HTTP 401 `application/json` response
+	JSON401 *Unauthorized
+	// JSON404 the response for an HTTP 404 `application/json` response
+	JSON404 *NotFound
+	// JSON409 the response for an HTTP 409 `application/json` response
+	JSON409 *Conflict
+	// JSON413 the response for an HTTP 413 `application/json` response
+	JSON413 *PayloadTooLarge
+	// JSON500 the response for an HTTP 500 `application/json` response
+	JSON500 *InternalError
+}
+
+// GetJSON200 returns the response for an HTTP 200 `application/json` response
+func (r BindDishExternalIDResponse) GetJSON200() *Dish {
+	return r.JSON200
+}
+
+// GetJSON400 returns the response for an HTTP 400 `application/json` response
+func (r BindDishExternalIDResponse) GetJSON400() *BadRequest {
+	return r.JSON400
+}
+
+// GetJSON401 returns the response for an HTTP 401 `application/json` response
+func (r BindDishExternalIDResponse) GetJSON401() *Unauthorized {
+	return r.JSON401
+}
+
+// GetJSON404 returns the response for an HTTP 404 `application/json` response
+func (r BindDishExternalIDResponse) GetJSON404() *NotFound {
+	return r.JSON404
+}
+
+// GetJSON409 returns the response for an HTTP 409 `application/json` response
+func (r BindDishExternalIDResponse) GetJSON409() *Conflict {
+	return r.JSON409
+}
+
+// GetJSON413 returns the response for an HTTP 413 `application/json` response
+func (r BindDishExternalIDResponse) GetJSON413() *PayloadTooLarge {
+	return r.JSON413
+}
+
+// GetJSON500 returns the response for an HTTP 500 `application/json` response
+func (r BindDishExternalIDResponse) GetJSON500() *InternalError {
+	return r.JSON500
+}
+
+// GetBody returns the raw response body bytes
+func (r BindDishExternalIDResponse) GetBody() []byte {
+	return r.Body
+}
+
+// Status returns HTTPResponse.Status
+func (r BindDishExternalIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r BindDishExternalIDResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r BindDishExternalIDResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -2129,6 +2761,10 @@ func (c *ClientWithResponses) UpdateCategoryWithResponse(ctx context.Context, ca
 
 // CreateDishWithBodyWithResponse Создать блюдо
 //
+// external_id необязателен и уникален внутри заведения независимо от категории.
+// Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+// После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
+//
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with POST /api/v1/partner/dishes (the `CreateDish` operationId).
@@ -2142,6 +2778,10 @@ func (c *ClientWithResponses) CreateDishWithBodyWithResponse(ctx context.Context
 
 // CreateDishWithResponse Создать блюдо
 //
+// external_id необязателен и уникален внутри заведения независимо от категории.
+// Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+// После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
+//
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
 // Corresponds with POST /api/v1/partner/dishes (the `CreateDish` operationId).
@@ -2151,6 +2791,36 @@ func (c *ClientWithResponses) CreateDishWithResponse(ctx context.Context, body C
 		return nil, err
 	}
 	return ParseCreateDishResponse(rsp)
+}
+
+// GetPartnerDishByExternalIDWithResponse Найти блюдо по внешнему ID
+//
+// Поиск ограничен заведением из partner key. Совпадающий чужой ID не раскрывается.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/partner/dishes/by-external-id (the `GetPartnerDishByExternalID` operationId).
+func (c *ClientWithResponses) GetPartnerDishByExternalIDWithResponse(ctx context.Context, params *GetPartnerDishByExternalIDParams, reqEditors ...RequestEditorFn) (*GetPartnerDishByExternalIDResponse, error) {
+	rsp, err := c.GetPartnerDishByExternalID(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetPartnerDishByExternalIDResponse(rsp)
+}
+
+// GetPartnerDishWithResponse Получить своё блюдо
+//
+// Возвращает текущую привязку каталога для сопоставления dish_id из заказа. Название и цена заказа остаются историческим снимком.
+//
+// Returns a wrapper object for the known response body format(s).
+//
+// Corresponds with GET /api/v1/partner/dishes/{dishId} (the `GetPartnerDish` operationId).
+func (c *ClientWithResponses) GetPartnerDishWithResponse(ctx context.Context, dishID DishID, reqEditors ...RequestEditorFn) (*GetPartnerDishResponse, error) {
+	rsp, err := c.GetPartnerDish(ctx, dishID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetPartnerDishResponse(rsp)
 }
 
 // UpdateDishWithBodyWithResponse Изменить блюдо
@@ -2177,6 +2847,42 @@ func (c *ClientWithResponses) UpdateDishWithResponse(ctx context.Context, dishID
 		return nil, err
 	}
 	return ParseUpdateDishResponse(rsp)
+}
+
+// BindDishExternalIDWithBodyWithResponse Однократно привязать ID каталога к блюду
+//
+// Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+// Другой уже назначенный ID даёт 409 external_id_already_bound.
+// ID другого блюда этого заведения даёт 409 external_id_conflict.
+// Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+//
+// Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/partner/dishes/{dishId}/external-id (the `BindDishExternalID` operationId).
+func (c *ClientWithResponses) BindDishExternalIDWithBodyWithResponse(ctx context.Context, dishID DishID, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BindDishExternalIDResponse, error) {
+	rsp, err := c.BindDishExternalIDWithBody(ctx, dishID, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBindDishExternalIDResponse(rsp)
+}
+
+// BindDishExternalIDWithResponse Однократно привязать ID каталога к блюду
+//
+// Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+// Другой уже назначенный ID даёт 409 external_id_already_bound.
+// ID другого блюда этого заведения даёт 409 external_id_conflict.
+// Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+//
+// Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
+//
+// Corresponds with PUT /api/v1/partner/dishes/{dishId}/external-id (the `BindDishExternalID` operationId).
+func (c *ClientWithResponses) BindDishExternalIDWithResponse(ctx context.Context, dishID DishID, body BindDishExternalIDJSONRequestBody, reqEditors ...RequestEditorFn) (*BindDishExternalIDResponse, error) {
+	rsp, err := c.BindDishExternalID(ctx, dishID, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBindDishExternalIDResponse(rsp)
 }
 
 // UpdateEstablishmentWithBodyWithResponse Изменить приём заказов
@@ -2254,8 +2960,18 @@ func (c *ClientWithResponses) GetPartnerOrderWithResponse(ctx context.Context, o
 
 // UpdatePartnerOrderStatusWithBodyWithResponse Изменить статус заказа
 //
-// Проверяет владельца заказа и допустимость перехода. Повтор уже
-// применённого статуса считается успешным.
+// Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+// разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+// Из delivering, completed и cancelled отказ запрещён (409).
+// Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+// Для rejected первоначальные причина, комментарий и updated_at не меняются,
+// даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+// до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+// она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+// Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+// confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+// При конфликте конкурентных изменений возвращается 409, если сохранённый
+// статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
 //
 // Takes any type of body and a specified content type, and returns a wrapper object for the known response body format(s).
 //
@@ -2270,8 +2986,18 @@ func (c *ClientWithResponses) UpdatePartnerOrderStatusWithBodyWithResponse(ctx c
 
 // UpdatePartnerOrderStatusWithResponse Изменить статус заказа
 //
-// Проверяет владельца заказа и допустимость перехода. Повтор уже
-// применённого статуса считается успешным.
+// Проверяет владельца заказа и допустимость перехода. Отказ (rejected)
+// разрешён из pending_confirmation, confirmed, preparing и ready_for_delivery.
+// Из delivering, completed и cancelled отказ запрещён (409).
+// Повтор уже применённого статуса возвращает 200 с сохранённым результатом.
+// Для rejected первоначальные причина, комментарий и updated_at не меняются,
+// даже если повтор содержит другую валидную причину. Невалидное тело даёт 400
+// до проверки повтора. Причину confirmation_timeout устанавливает только сервис;
+// она может вернуться в ответе повтора для уже отклонённого по таймауту заказа.
+// Если срок pending_confirmation истёк при попытке перехода, сервис сохраняет
+// confirmation_timeout и возвращает 409. После подтверждения этот таймаут не действует.
+// При конфликте конкурентных изменений возвращается 409, если сохранённый
+// статус отличается от запрошенного; совпадающий статус даёт 200 без новой записи.
 //
 // Takes a body of the `application/json` content type, and returns a wrapper object for the known response body format(s).
 //
@@ -2455,12 +3181,127 @@ func ParseCreateDishResponse(rsp *http.Response) (*CreateDishResponse, error) {
 		}
 		response.JSON404 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
 		var dest PayloadTooLarge
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetPartnerDishByExternalIDResponse parses an HTTP response from a GetPartnerDishByExternalIDWithResponse call
+func ParseGetPartnerDishByExternalIDResponse(rsp *http.Response) (*GetPartnerDishByExternalIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetPartnerDishByExternalIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Dish
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetPartnerDishResponse parses an HTTP response from a GetPartnerDishWithResponse call
+func ParseGetPartnerDishResponse(rsp *http.Response) (*GetPartnerDishResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetPartnerDishResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Dish
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest InternalError
@@ -2515,6 +3356,74 @@ func ParseUpdateDishResponse(rsp *http.Response) (*UpdateDishResponse, error) {
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest PayloadTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseBindDishExternalIDResponse parses an HTTP response from a BindDishExternalIDWithResponse call
+func ParseBindDishExternalIDResponse(rsp *http.Response) (*BindDishExternalIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &BindDishExternalIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Dish
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthorized
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
 		var dest PayloadTooLarge
