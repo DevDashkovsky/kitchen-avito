@@ -85,7 +85,7 @@ func newOrderFixture(t *testing.T) *orderFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.pool.QueryRow(t.Context(), `INSERT INTO dishes(category_id,name,price_minor,is_available) VALUES($1,'Soup',100,true) RETURNING id`, categoryID).Scan(&f.dishID)
+	err = f.pool.QueryRow(t.Context(), `INSERT INTO dishes(establishment_id,category_id,name,price_minor,is_available) VALUES($1,$2,'Soup',100,true) RETURNING id`, f.venueID, categoryID).Scan(&f.dishID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,14 +366,14 @@ func TestIdempotencyMigrationWithLegacyOrder(t *testing.T) {
 	if goose == "" {
 		t.Fatal("TEST_GOOSE required")
 	}
-	migrate := func(direction string) {
+	migrate := func(args ...string) {
 		t.Helper()
-		cmd := exec.CommandContext(t.Context(), goose, "-dir", filepath.Join("..", "..", "migrations"), "postgres", os.Getenv("UPGRADE_DATABASE_URL"), direction)
+		cmd := exec.CommandContext(t.Context(), goose, append([]string{"-dir", filepath.Join("..", "..", "migrations"), "postgres", os.Getenv("UPGRADE_DATABASE_URL")}, args...)...)
 		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("migration %s: %v: %s", direction, err, output)
+			t.Fatalf("migration %v: %v: %s", args, err, output)
 		}
 	}
-	migrate("up")
+	migrate("up-to", "10")
 	order, err := repository.New(pool).GetOrderByTrackingTokenHash(t.Context(), hash[:])
 	if err != nil || order.ID != id || order.RequestFingerprint != nil {
 		t.Fatalf("legacy order after upgrade: %v", err)
@@ -382,12 +382,13 @@ func TestIdempotencyMigrationWithLegacyOrder(t *testing.T) {
 	if err == nil {
 		t.Fatal("invalid fingerprint accepted")
 	}
-	migrate("down")
+	migrate("down-to", "9")
 	var count int
 	err = pool.QueryRow(t.Context(), `SELECT count(*) FROM orders WHERE id=$1 AND tracking_token_hash=$2`, id, hash[:]).Scan(&count)
 	if err != nil || count != 1 {
 		t.Fatal("rollback removed legacy order")
 	}
+	migrate("up-to", "10")
 	migrate("up")
 	// Verify the new repository still accepts the old token after upgrade/down/up.
 	_, err = repository.New(pool).GetOrderByTrackingTokenHash(t.Context(), hash[:])

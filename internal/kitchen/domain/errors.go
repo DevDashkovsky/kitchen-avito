@@ -3,6 +3,8 @@ package domain
 import "errors"
 
 var (
+	ErrExternalIDConflict      = errors.New("external dish ID conflict")
+	ErrExternalIDAlreadyBound  = errors.New("dish already has another external ID")
 	ErrIdempotencyKeyReused    = errors.New("idempotency key reused")
 	ErrInvalidInput            = errors.New("invalid input")
 	ErrUnauthorized            = errors.New("unauthorized")

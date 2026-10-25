@@ -37,6 +37,7 @@ func getOrderDishes(ctx context.Context, db menuQueryer, establishmentID int64, 
 
 	query := `
 SELECT
+    d.external_id,
     d.id,
     d.category_id,
     d.name,

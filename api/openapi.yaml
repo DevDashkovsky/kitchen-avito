@@ -273,6 +273,10 @@ paths:
         - Partner
       operationId: createDish
       summary: Создать блюдо
+      description: |
+        external_id необязателен и уникален внутри заведения независимо от категории.
+        Повтор POST с занятым ID возвращает 409 external_id_conflict, даже при том же теле.
+        После потери ответа найдите блюдо через GET by-external-id; существующее блюдо не переписывается.
       security:
         - PartnerApiKey: []
       requestBody:
@@ -296,10 +300,67 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/dishes/by-external-id:
+    get:
+      tags: [Partner]
+      operationId: getPartnerDishByExternalID
+      summary: Найти блюдо по внешнему ID
+      description: Поиск ограничен заведением из partner key. Совпадающий чужой ID не раскрывается.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - name: external_id
+          in: query
+          required: true
+          description: Ровно одно значение; повтор параметра запрещён
+          schema:
+            $ref: '#/components/schemas/ExternalDishID'
+      responses:
+        '200':
+          description: Блюдо своего заведения; external_id отсутствует до назначения привязки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
 
   /api/v1/partner/dishes/{dishId}:
+    get:
+      tags: [Partner]
+      operationId: getPartnerDish
+      summary: Получить своё блюдо
+      description: Возвращает текущую привязку каталога для сопоставления dish_id из заказа. Название и цена заказа остаются историческим снимком.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/DishId'
+      responses:
+        '200':
+          description: Блюдо своего заведения; external_id отсутствует до назначения привязки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
     patch:
       tags:
         - Partner
@@ -330,6 +391,46 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/partner/dishes/{dishId}/external-id:
+    put:
+      tags: [Partner]
+      operationId: bindDishExternalID
+      summary: Однократно привязать ID каталога к блюду
+      description: |
+        Привязка неизменяема. Повтор того же значения возвращает 200 без изменения updated_at.
+        Другой уже назначенный ID даёт 409 external_id_already_bound.
+        ID другого блюда этого заведения даёт 409 external_id_conflict.
+        Конфликт не меняет блюдо. При отсутствии блюда или чужом владельце возвращается одинаковый 404.
+      security:
+        - PartnerApiKey: []
+      parameters:
+        - $ref: '#/components/parameters/DishId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BindDishExternalIDRequest'
+      responses:
+        '200':
+          description: Блюдо с сохранённой привязкой
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
         '500':
           $ref: '#/components/responses/InternalError'
 
@@ -756,6 +857,8 @@ components:
         - price_minor
         - is_available
       properties:
+        external_id:
+          $ref: '#/components/schemas/ExternalDishID'
         id:
           type: integer
           format: int64
@@ -1002,6 +1105,21 @@ components:
           minLength: 1
           maxLength: 100
 
+    ExternalDishID:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9._:-]{1,128}$'
+      description: Неизменяемый ID каталога заведения. Регистр и ведущие нули значимы; пробелы и Unicode не допускаются.
+
+    BindDishExternalIDRequest:
+      type: object
+      additionalProperties: false
+      required: [external_id]
+      properties:
+        external_id:
+          $ref: '#/components/schemas/ExternalDishID'
+
     CreateDishRequest:
       type: object
       additionalProperties: false
@@ -1010,6 +1128,8 @@ components:
         - name
         - price_minor
       properties:
+        external_id:
+          $ref: '#/components/schemas/ExternalDishID'
         category_id:
           type: integer
           format: int64
@@ -1210,6 +1330,8 @@ components:
             - not_found
             - order_conflict
             - duplicate_category
+            - external_id_conflict
+            - external_id_already_bound
             - invalid_status_transition
             - cancellation_not_allowed
             - internal_error

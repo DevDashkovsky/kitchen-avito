@@ -19,12 +19,15 @@ initdb -D "$task_tmp/data" -U kitchen -A trust --locale-provider=icu --icu-local
 pg_ctl -D "$task_tmp/data" -l "$task_tmp/postgres.log" -o "-h '' -k $task_tmp" -w start >/dev/null
 createdb -h "$task_tmp" -U kitchen kitchen_test
 createdb -h "$task_tmp" -U kitchen kitchen_upgrade
+createdb -h "$task_tmp" -U kitchen kitchen_external_upgrade
 export TEST_DATABASE_URL="postgresql:///kitchen_test?host=$task_tmp&user=kitchen"
+export EXTERNAL_ID_UPGRADE_DATABASE_URL="postgresql:///kitchen_external_upgrade?host=$task_tmp&user=kitchen"
 export UPGRADE_DATABASE_URL="postgresql:///kitchen_upgrade?host=$task_tmp&user=kitchen"
 mkdir "$task_tmp/bin"
 GOBIN="$task_tmp/bin" go install -tags='no_clickhouse no_libsql no_mssql no_mysql no_sqlite3 no_vertica no_ydb' github.com/pressly/goose/v3/cmd/goose@v3.27.2
 "$task_tmp/bin/goose" -dir migrations postgres "$TEST_DATABASE_URL" up
 "$task_tmp/bin/goose" -dir migrations postgres "$UPGRADE_DATABASE_URL" up-to 9
+"$task_tmp/bin/goose" -dir migrations postgres "$EXTERNAL_ID_UPGRADE_DATABASE_URL" up-to 10
 psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f seeds/demo.sql >/dev/null
 export TEST_GOOSE="$task_tmp/bin/goose"
 go test -race -tags=integration ./cmd/kitchen -count=1
@@ -40,9 +43,10 @@ start_api() {
 start_api
 go test -race -v ./tests/e2e -run '^TestOrderScenarios$' -count=1
 export RESTART_FIXTURE="$task_tmp/restart.json"
-RESTART_PHASE=create go test ./tests/e2e -run '^TestIdempotencyRestart$' -count=1
+export EXTERNAL_ID_RESTART_FIXTURE="$task_tmp/external-id-restart.json"
+RESTART_PHASE=create go test ./tests/e2e -run '^Test(Idempotency|DishExternalID)Restart$' -count=1
 kill "$api_pid"
 wait "$api_pid"
 api_pid=''
 start_api
-RESTART_PHASE=replay go test ./tests/e2e -run '^TestIdempotencyRestart$' -count=1
+RESTART_PHASE=replay go test ./tests/e2e -run '^Test(Idempotency|DishExternalID)Restart$' -count=1

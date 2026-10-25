@@ -44,8 +44,9 @@ WHERE api_key_hash = decode(
         AND lower(existing.name) = lower(category_name)
   );
 
-INSERT INTO dishes (category_id, name, description, price_minor, is_available)
+INSERT INTO dishes (establishment_id, category_id, name, description, price_minor, is_available)
 SELECT
+    c.establishment_id,
     c.id,
     dish_name,
     description,
@@ -70,8 +71,8 @@ WHERE c.name = 'Бургеры'
         AND existing.name = dish_name
   );
 
-INSERT INTO dishes (category_id, name, description, price_minor, is_available)
-SELECT c.id, 'Морс', 'Ягодный морс, 500 мл', 12900, TRUE
+INSERT INTO dishes (establishment_id, category_id, name, description, price_minor, is_available)
+SELECT c.establishment_id, c.id, 'Морс', 'Ягодный морс, 500 мл', 12900, TRUE
 FROM menu_categories AS c
 JOIN establishments AS e ON e.id = c.establishment_id
 WHERE c.name = 'Напитки'
